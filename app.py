@@ -1,7 +1,9 @@
 import json
 import os
+import sqlite3
 import time
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -16,13 +18,16 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
+APP_DIR = Path(__file__).resolve().parent
+DB_PATH = APP_DIR / "history.db"
+
 st.set_page_config(
     page_title="OpenAI vs Gemini Comparator",
     layout="wide",
 )
 
 st.title("OpenAI vs Gemini Comparator")
-st.caption("Send the same prompt to both APIs and compare outputs, latency, and token metadata.")
+st.caption("Send the same prompt to both APIs, compare outputs, and persist history in SQLite.")
 
 
 def safe_getattr(obj: Any, name: str, default=None):
@@ -55,12 +60,8 @@ def obj_to_dict(obj: Any) -> Any:
 
 
 def estimate_openai_cost(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
-    """
-    Rough estimate only. Update if pricing changes.
-    """
     pricing_per_million = {
         "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
-        # Add more models here if you want estimates for them.
     }
 
     price = pricing_per_million.get(model)
@@ -71,6 +72,154 @@ def estimate_openai_cost(model: str, input_tokens: int, output_tokens: int) -> O
         (input_tokens / 1_000_000) * price["input"]
         + (output_tokens / 1_000_000) * price["output"]
     )
+
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                ok INTEGER NOT NULL,
+                latency_ms REAL,
+                max_output_tokens INTEGER,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                finish_status TEXT,
+                response_text TEXT,
+                error_text TEXT,
+                raw_json TEXT
+            )
+            """
+        )
+        conn.commit()
+
+
+def save_run(prompt: str, result: Dict[str, Any]) -> None:
+    meta = result.get("metadata", {}) or {}
+    finish_status = (
+        meta.get("finish_reason")
+        or meta.get("status")
+        or (
+            (meta.get("incomplete_details") or {}).get("reason")
+            if isinstance(meta.get("incomplete_details"), dict)
+            else None
+        )
+    )
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO runs (
+                created_at,
+                prompt,
+                provider,
+                model,
+                ok,
+                latency_ms,
+                max_output_tokens,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                finish_status,
+                response_text,
+                error_text,
+                raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                prompt,
+                result.get("provider"),
+                meta.get("model"),
+                1 if result.get("ok", False) else 0,
+                meta.get("latency_ms"),
+                meta.get("max_output_tokens"),
+                meta.get("input_tokens"),
+                meta.get("output_tokens"),
+                meta.get("total_tokens"),
+                finish_status,
+                result.get("text"),
+                result.get("error"),
+                json.dumps(result.get("raw"), ensure_ascii=False) if result.get("raw") is not None else None,
+            ),
+        )
+        conn.commit()
+
+
+def load_saved_runs(limit: int = 100) -> pd.DataFrame:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                created_at,
+                provider,
+                model,
+                ok,
+                latency_ms,
+                max_output_tokens,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                finish_status,
+                prompt,
+                response_text,
+                error_text
+            FROM runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame([dict(row) for row in rows])
+
+
+def load_run_by_id(run_id: int) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    data = dict(row)
+    raw_json = data.get("raw_json")
+    if raw_json:
+        try:
+            data["raw_json"] = json.loads(raw_json)
+        except Exception:
+            pass
+    return data
+
+
+def delete_all_runs() -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM runs")
+        conn.commit()
+
+
+def export_runs_json() -> str:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
+    return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
 
 
 def call_openai(prompt: str, model: str, max_output_tokens: int) -> Dict[str, Any]:
@@ -211,6 +360,8 @@ def call_gemini(prompt: str, model: str, max_output_tokens: int) -> Dict[str, An
         }
 
 
+init_db()
+
 with st.sidebar:
     st.header("Settings")
 
@@ -241,6 +392,14 @@ with st.sidebar:
         step=32,
     )
 
+    history_limit = st.slider(
+        "Saved rows to show",
+        min_value=10,
+        max_value=500,
+        value=100,
+        step=10,
+    )
+
     show_raw = st.checkbox("Show raw API responses", value=False)
     show_cost_estimate = st.checkbox("Show rough OpenAI cost estimate", value=True)
 
@@ -248,9 +407,9 @@ with st.sidebar:
     st.caption("Environment key status")
     st.write(f"OpenAI key loaded: {'✅' if bool(OPENAI_API_KEY) else '❌'}")
     st.write(f"Gemini key loaded: {'✅' if bool(GEMINI_API_KEY) else '❌'}")
+    st.write(f"SQLite DB: `{DB_PATH.name}`")
 
-
-default_prompt = "Is Oslo north of the Arctic Circle?"
+default_prompt = "Is Aalto University in Otaniemi?"
 
 prompt = st.text_area(
     "Prompt",
@@ -272,6 +431,9 @@ if run:
     with st.spinner("Calling both APIs..."):
         openai_result = call_openai(prompt, openai_model, max_output_tokens)
         gemini_result = call_gemini(prompt, gemini_model, max_output_tokens)
+
+    save_run(prompt, openai_result)
+    save_run(prompt, gemini_result)
 
     st.session_state.history.insert(
         0,
@@ -370,9 +532,72 @@ if run:
     st.dataframe(comparison_df, use_container_width=True)
 
 st.divider()
-st.subheader("Session history")
+st.subheader("Current browser session history")
 
 if st.session_state.history:
     st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
 else:
-    st.caption("No runs yet.")
+    st.caption("No runs yet in this browser session.")
+
+st.divider()
+st.subheader("Saved history (persistent)")
+
+saved_df = load_saved_runs(limit=history_limit)
+
+col_a, col_b = st.columns([1, 1])
+with col_a:
+    export_json = export_runs_json()
+    st.download_button(
+        "Download saved history as JSON",
+        data=export_json,
+        file_name="llm_compare_history.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+with col_b:
+    if st.button("Clear saved history", type="secondary", use_container_width=True):
+        delete_all_runs()
+        st.success("Saved history cleared.")
+        st.rerun()
+
+if not saved_df.empty:
+    st.dataframe(saved_df, use_container_width=True)
+
+    run_ids = saved_df["id"].tolist()
+    selected_run_id = st.selectbox("Inspect saved run", options=run_ids, format_func=lambda x: f"Run #{x}")
+
+    selected_run = load_run_by_id(int(selected_run_id))
+    if selected_run:
+        st.markdown("**Saved run details**")
+        st.json(
+            {
+                "id": selected_run["id"],
+                "created_at": selected_run["created_at"],
+                "provider": selected_run["provider"],
+                "model": selected_run["model"],
+                "ok": selected_run["ok"],
+                "latency_ms": selected_run["latency_ms"],
+                "max_output_tokens": selected_run["max_output_tokens"],
+                "input_tokens": selected_run["input_tokens"],
+                "output_tokens": selected_run["output_tokens"],
+                "total_tokens": selected_run["total_tokens"],
+                "finish_status": selected_run["finish_status"],
+            }
+        )
+
+        st.markdown("**Prompt**")
+        st.code(selected_run["prompt"] or "", language="text")
+
+        if selected_run.get("response_text"):
+            st.markdown("**Response**")
+            st.write(selected_run["response_text"])
+
+        if selected_run.get("error_text"):
+            st.markdown("**Error**")
+            st.error(selected_run["error_text"])
+
+        if show_raw and selected_run.get("raw_json") is not None:
+            with st.expander("Raw saved response"):
+                st.json(selected_run["raw_json"])
+else:
+    st.caption("No saved history yet. Run the models once to persist data.")

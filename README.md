@@ -1,6 +1,6 @@
-# OpenAI vs Gemini Comparator
+# OpenAI vs Gemini Comparator (Persistent History)
 
-A small local Streamlit app that sends the same prompt to OpenAI and Gemini, then shows the responses side by side with basic metadata.
+A local Streamlit app that sends the same prompt to OpenAI and Gemini, shows the responses side by side, and saves persistent history in SQLite.
 
 ## Features
 
@@ -11,13 +11,18 @@ A small local Streamlit app that sends the same prompt to OpenAI and Gemini, the
   - input/output/total tokens
   - finish/status info when available
 - Adjustable response cap with `max_output_tokens`
-- Session history for the current Streamlit session
+- Current browser-session history
+- Persistent SQLite history saved to `history.db`
+- Export saved history as JSON
+- Clear saved history from the UI
+- Inspect saved prompts and responses from earlier runs
 
 ## Files
 
 - `app.py` — the Streamlit app
 - `requirements.txt` — Python dependencies
 - `.env.example` — environment variable template
+- `history.db` — created automatically on first run
 
 ## Setup
 
@@ -75,6 +80,15 @@ streamlit run app.py
 Open the local URL shown by Streamlit, usually:
 
 `http://localhost:8501`
+
+## Persistence
+
+The app creates `history.db` in the same folder as `app.py` and stores one row per provider call. Each click of "Run both models" saves:
+
+- one OpenAI row
+- one Gemini row
+
+That means prompts, responses, token metadata, and errors persist across refreshes and restarts.
 
 ## Notes
 
