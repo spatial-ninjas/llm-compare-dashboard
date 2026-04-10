@@ -4,6 +4,8 @@ This project is a local Streamlit app for comparing OpenAI and Gemini responses,
 
 That means it is a small Python web app that runs on your own computer and opens in your browser. It is not deployed as a public website or backend service. You start it locally with `streamlit run app.py`, and Streamlit provides the user interface.
 
+![Main dashboard view](docs/screenshot-main.png)
+
 > [!IMPORTANT]
 > Never commit API keys, `.env`, or any other secrets to Git.
 > Make sure `.env` is listed in `.gitignore` before you start.
