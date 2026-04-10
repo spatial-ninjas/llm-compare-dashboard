@@ -3,7 +3,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import streamlit as st
@@ -61,6 +61,8 @@ def obj_to_dict(obj: Any) -> Any:
 
 def estimate_openai_cost(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
     pricing_per_million = {
+        "gpt-5.4": {"input": 2.50, "output": 15.00},
+        "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
         "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
     }
 
@@ -103,6 +105,23 @@ def init_db() -> None:
             )
             """
         )
+
+        existing_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+
+        extra_columns = {
+            "thinking_mode": "TEXT",
+            "thinking_budget": "INTEGER",
+            "thoughts_tokens": "INTEGER",
+            "attempts": "INTEGER",
+        }
+
+        for column_name, column_type in extra_columns.items():
+            if column_name not in existing_columns:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}")
+
         conn.commit()
 
 
@@ -135,8 +154,12 @@ def save_run(prompt: str, result: Dict[str, Any]) -> None:
                 finish_status,
                 response_text,
                 error_text,
-                raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                raw_json,
+                thinking_mode,
+                thinking_budget,
+                thoughts_tokens,
+                attempts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -153,6 +176,10 @@ def save_run(prompt: str, result: Dict[str, Any]) -> None:
                 result.get("text"),
                 result.get("error"),
                 json.dumps(result.get("raw"), ensure_ascii=False) if result.get("raw") is not None else None,
+                meta.get("thinking_mode"),
+                meta.get("thinking_budget"),
+                meta.get("thoughts_tokens"),
+                meta.get("attempts"),
             ),
         )
         conn.commit()
@@ -174,6 +201,10 @@ def load_saved_runs(limit: int = 100) -> pd.DataFrame:
                 output_tokens,
                 total_tokens,
                 finish_status,
+                thinking_mode,
+                thinking_budget,
+                thoughts_tokens,
+                attempts,
                 prompt,
                 response_text,
                 error_text
@@ -271,6 +302,7 @@ def call_openai(prompt: str, model: str, max_output_tokens: int) -> Dict[str, An
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": total_tokens,
+                "attempts": 1,
                 "usage_raw": usage_dict,
             },
             "raw": obj_to_dict(response),
@@ -287,11 +319,38 @@ def call_openai(prompt: str, model: str, max_output_tokens: int) -> Dict[str, An
                 "model": model,
                 "latency_ms": latency_ms,
                 "max_output_tokens": max_output_tokens,
+                "attempts": 1,
             },
         }
 
 
-def call_gemini(prompt: str, model: str, max_output_tokens: int) -> Dict[str, Any]:
+def build_gemini_thinking_config(
+    thinking_mode: str,
+    custom_thinking_budget: Optional[int],
+) -> Optional[types.ThinkingConfig]:
+    if thinking_mode == "off":
+        return types.ThinkingConfig(thinking_budget=0)
+
+    if thinking_mode == "custom":
+        return types.ThinkingConfig(
+            thinking_budget=custom_thinking_budget if custom_thinking_budget is not None else 128
+        )
+
+    return None
+
+
+def as_int(value: Any) -> int:
+    return int(value) if value is not None else 0
+
+
+def call_gemini(
+    prompt: str,
+    model: str,
+    max_output_tokens: int,
+    thinking_mode: str = "dynamic",
+    custom_thinking_budget: Optional[int] = None,
+    max_retries: int = 4,
+) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
         return {
             "ok": False,
@@ -300,64 +359,116 @@ def call_gemini(prompt: str, model: str, max_output_tokens: int) -> Dict[str, An
         }
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    started = time.perf_counter()
 
-    try:
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                max_output_tokens=max_output_tokens,
-            ),
-        )
-        latency_ms = round((time.perf_counter() - started) * 1000, 2)
+    thinking_config = build_gemini_thinking_config(
+        thinking_mode=thinking_mode,
+        custom_thinking_budget=custom_thinking_budget,
+    )
 
-        response_dict = obj_to_dict(response) or {}
-        text_output = safe_getattr(response, "text", None)
-        if not text_output:
-            text_output = json.dumps(response_dict, indent=2, ensure_ascii=False)
+    config_kwargs: Dict[str, Any] = {
+        "max_output_tokens": max_output_tokens,
+    }
+    if thinking_config is not None:
+        config_kwargs["thinking_config"] = thinking_config
 
-        usage_md = response_dict.get("usage_metadata", {}) or {}
-        input_tokens = usage_md.get("prompt_token_count", 0)
-        output_tokens = usage_md.get("candidates_token_count", 0)
-        total_tokens = usage_md.get("total_token_count", input_tokens + output_tokens)
+    last_error = None
+    started_total = time.perf_counter()
 
-        finish_reason = None
-        candidates = response_dict.get("candidates")
-        if isinstance(candidates, list) and candidates:
-            finish_reason = candidates[0].get("finish_reason")
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
 
-        return {
-            "ok": True,
-            "provider": "Gemini",
-            "text": text_output,
-            "metadata": {
+            latency_ms = round((time.perf_counter() - started_total) * 1000, 2)
+
+            response_dict = obj_to_dict(response) or {}
+            text_output = safe_getattr(response, "text", None)
+            if not text_output:
+                text_output = json.dumps(response_dict, indent=2, ensure_ascii=False)
+
+            usage_md = response_dict.get("usage_metadata", {}) or {}
+            input_tokens = as_int(usage_md.get("prompt_token_count"))
+            output_tokens = as_int(usage_md.get("candidates_token_count"))
+            thoughts_tokens = as_int(usage_md.get("thoughts_token_count"))
+            total_tokens = as_int(usage_md.get("total_token_count")) or (
+                input_tokens + output_tokens + thoughts_tokens
+            )
+
+            finish_reason = None
+            finish_message = None
+            candidates = response_dict.get("candidates")
+            if isinstance(candidates, list) and candidates:
+                finish_reason = candidates[0].get("finish_reason")
+                finish_message = candidates[0].get("finish_message")
+
+            effective_thinking_budget = None
+            if thinking_mode == "off":
+                effective_thinking_budget = 0
+            elif thinking_mode == "custom":
+                effective_thinking_budget = custom_thinking_budget
+
+            return {
+                "ok": True,
                 "provider": "Gemini",
-                "model": model,
-                "latency_ms": latency_ms,
-                "finish_reason": finish_reason,
-                "max_output_tokens": max_output_tokens,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": total_tokens,
-                "usage_raw": usage_md,
-            },
-            "raw": response_dict,
-        }
+                "text": text_output,
+                "metadata": {
+                    "provider": "Gemini",
+                    "model": model,
+                    "latency_ms": latency_ms,
+                    "finish_reason": finish_reason,
+                    "finish_message": finish_message,
+                    "max_output_tokens": max_output_tokens,
+                    "thinking_mode": thinking_mode,
+                    "thinking_budget": effective_thinking_budget,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "thoughts_tokens": thoughts_tokens,
+                    "total_tokens": total_tokens,
+                    "attempts": attempt + 1,
+                    "usage_raw": usage_md,
+                },
+                "raw": response_dict,
+            }
 
-    except Exception as e:
-        latency_ms = round((time.perf_counter() - started) * 1000, 2)
-        return {
-            "ok": False,
-            "provider": "Gemini",
-            "error": str(e),
-            "metadata": {
-                "provider": "Gemini",
-                "model": model,
-                "latency_ms": latency_ms,
-                "max_output_tokens": max_output_tokens,
-            },
-        }
+        except Exception as e:
+            last_error = e
+            error_text = str(e)
+
+            is_retryable = (
+                "503" in error_text
+                or "UNAVAILABLE" in error_text
+                or "429" in error_text
+                or "RESOURCE_EXHAUSTED" in error_text
+            )
+
+            if not is_retryable or attempt == max_retries:
+                latency_ms = round((time.perf_counter() - started_total) * 1000, 2)
+                return {
+                    "ok": False,
+                    "provider": "Gemini",
+                    "error": error_text,
+                    "metadata": {
+                        "provider": "Gemini",
+                        "model": model,
+                        "latency_ms": latency_ms,
+                        "max_output_tokens": max_output_tokens,
+                        "thinking_mode": thinking_mode,
+                        "thinking_budget": (
+                            custom_thinking_budget if thinking_mode == "custom"
+                            else 0 if thinking_mode == "off"
+                            else None
+                        ),
+                        "attempts": attempt + 1,
+                    },
+                }
+
+            sleep_seconds = min(2 ** attempt, 20)
+            time.sleep(sleep_seconds)
+
+    raise RuntimeError(f"Unexpected retry exit: {last_error}")
 
 
 init_db()
@@ -391,6 +502,27 @@ with st.sidebar:
         value=300,
         step=32,
     )
+
+    gemini_thinking_mode = st.selectbox(
+        "Gemini thinking budget",
+        options=[
+            "dynamic",
+            "off",
+            "custom",
+        ],
+        index=0,
+        help="Dynamic lets Gemini decide. Off disables thinking. Custom sets an explicit thinking token budget.",
+    )
+
+    gemini_custom_thinking_budget = None
+    if gemini_thinking_mode == "custom":
+        gemini_custom_thinking_budget = st.slider(
+            "Custom Gemini thinking budget",
+            min_value=0,
+            max_value=2048,
+            value=128,
+            step=32,
+        )
 
     history_limit = st.slider(
         "Saved rows to show",
@@ -430,7 +562,13 @@ if run:
 
     with st.spinner("Calling both APIs..."):
         openai_result = call_openai(prompt, openai_model, max_output_tokens)
-        gemini_result = call_gemini(prompt, gemini_model, max_output_tokens)
+        gemini_result = call_gemini(
+            prompt,
+            gemini_model,
+            max_output_tokens,
+            thinking_mode=gemini_thinking_mode,
+            custom_thinking_budget=gemini_custom_thinking_budget,
+        )
 
     save_run(prompt, openai_result)
     save_run(prompt, gemini_result)
@@ -444,6 +582,12 @@ if run:
             "gemini_ok": gemini_result.get("ok", False),
             "openai_model": openai_model,
             "gemini_model": gemini_model,
+            "gemini_thinking_mode": gemini_thinking_mode,
+            "gemini_thinking_budget": (
+                gemini_custom_thinking_budget
+                if gemini_thinking_mode == "custom"
+                else (0 if gemini_thinking_mode == "off" else None)
+            ),
             "max_output_tokens": max_output_tokens,
             "openai_total_tokens": openai_result.get("metadata", {}).get("total_tokens"),
             "gemini_total_tokens": gemini_result.get("metadata", {}).get("total_tokens"),
@@ -460,8 +604,11 @@ if run:
             st.success("Request succeeded")
             st.write(openai_result["text"])
 
+            meta = openai_result["metadata"]
+            attempts = meta.get("attempts", 1)
+            st.caption(f"Attempts: {attempts}")
+
             if show_cost_estimate:
-                meta = openai_result["metadata"]
                 cost = estimate_openai_cost(
                     meta["model"],
                     meta.get("input_tokens", 0),
@@ -481,6 +628,9 @@ if run:
         else:
             st.error(openai_result["error"])
             if "metadata" in openai_result:
+                meta = openai_result["metadata"]
+                attempts = meta.get("attempts", 1)
+                st.caption(f"Attempts: {attempts}")
                 st.subheader("OpenAI metadata")
                 st.json(openai_result["metadata"])
 
@@ -489,6 +639,23 @@ if run:
         if gemini_result["ok"]:
             st.success("Request succeeded")
             st.write(gemini_result["text"])
+
+            meta = gemini_result["metadata"]
+            parts = []
+            attempts = meta.get("attempts")
+            thinking_mode = meta.get("thinking_mode")
+            thinking_budget = meta.get("thinking_budget")
+
+            if attempts is not None:
+                parts.append(f"Attempts: {attempts}")
+            if thinking_mode:
+                parts.append(f"Thinking mode: {thinking_mode}")
+            if thinking_budget is not None:
+                parts.append(f"Thinking budget: {thinking_budget}")
+
+            if parts:
+                st.caption(" | ".join(parts))
+
             st.subheader("Gemini metadata")
             st.json(gemini_result["metadata"])
 
@@ -498,6 +665,22 @@ if run:
         else:
             st.error(gemini_result["error"])
             if "metadata" in gemini_result:
+                meta = gemini_result["metadata"]
+                parts = []
+                attempts = meta.get("attempts")
+                thinking_mode = meta.get("thinking_mode")
+                thinking_budget = meta.get("thinking_budget")
+
+                if attempts is not None:
+                    parts.append(f"Attempts: {attempts}")
+                if thinking_mode:
+                    parts.append(f"Thinking mode: {thinking_mode}")
+                if thinking_budget is not None:
+                    parts.append(f"Thinking budget: {thinking_budget}")
+
+                if parts:
+                    st.caption(" | ".join(parts))
+
                 st.subheader("Gemini metadata")
                 st.json(gemini_result["metadata"])
 
@@ -514,6 +697,7 @@ if run:
                 "input_tokens": openai_result.get("metadata", {}).get("input_tokens"),
                 "output_tokens": openai_result.get("metadata", {}).get("output_tokens"),
                 "total_tokens": openai_result.get("metadata", {}).get("total_tokens"),
+                "attempts": openai_result.get("metadata", {}).get("attempts"),
                 "max_output_tokens": openai_result.get("metadata", {}).get("max_output_tokens"),
             },
             {
@@ -523,7 +707,11 @@ if run:
                 "latency_ms": gemini_result.get("metadata", {}).get("latency_ms"),
                 "input_tokens": gemini_result.get("metadata", {}).get("input_tokens"),
                 "output_tokens": gemini_result.get("metadata", {}).get("output_tokens"),
+                "thoughts_tokens": gemini_result.get("metadata", {}).get("thoughts_tokens"),
                 "total_tokens": gemini_result.get("metadata", {}).get("total_tokens"),
+                "attempts": gemini_result.get("metadata", {}).get("attempts"),
+                "thinking_mode": gemini_result.get("metadata", {}).get("thinking_mode"),
+                "thinking_budget": gemini_result.get("metadata", {}).get("thinking_budget"),
                 "max_output_tokens": gemini_result.get("metadata", {}).get("max_output_tokens"),
             },
         ]
@@ -580,7 +768,11 @@ if not saved_df.empty:
                 "max_output_tokens": selected_run["max_output_tokens"],
                 "input_tokens": selected_run["input_tokens"],
                 "output_tokens": selected_run["output_tokens"],
+                "thoughts_tokens": selected_run.get("thoughts_tokens"),
                 "total_tokens": selected_run["total_tokens"],
+                "thinking_mode": selected_run.get("thinking_mode"),
+                "thinking_budget": selected_run.get("thinking_budget"),
+                "attempts": selected_run.get("attempts"),
                 "finish_status": selected_run["finish_status"],
             }
         )
@@ -601,3 +793,4 @@ if not saved_df.empty:
                 st.json(selected_run["raw_json"])
 else:
     st.caption("No saved history yet. Run the models once to persist data.")
+    

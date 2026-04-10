@@ -1,21 +1,69 @@
-# OpenAI vs Gemini Comparator (Persistent History)
+# llm-compare-dashboard
 
-A local Streamlit app that sends the same prompt to OpenAI and Gemini, shows the responses side by side, and saves persistent history in SQLite.
+This project is a local Streamlit app for comparing OpenAI and Gemini responses, metadata, and saved run history.
+
+That means it is a small Python web app that runs on your own computer and opens in your browser. It is not deployed as a public website or backend service. You start it locally with `streamlit run app.py`, and Streamlit provides the user interface.
+
+> [!IMPORTANT]
+> Never commit API keys, `.env`, or any other secrets to Git.
+> Make sure `.env` is listed in `.gitignore` before you start.
+> If a key is accidentally committed, assume it is compromised, revoke it, and generate a new one.
+
+## Why this exists
+
+The purpose of the app is to make it easy to compare OpenAI and Gemini on the same prompt in one place.
+
+Instead of writing separate scripts or manually copying prompts between providers, the app lets you:
+
+- send the same prompt to both models
+- view the responses side by side
+- inspect token and latency metadata
+- keep a persistent local history of earlier runs
+
+## What the app does
+
+For each run, the app sends your prompt to both providers, shows the results in the browser, and stores the run in a local SQLite database.
+
+The app also includes controls for:
+
+- model selection
+- output token limits
+- Gemini thinking settings
+- viewing raw responses
+- exporting saved history
 
 ## Features
 
-- One prompt sent to both providers
-- Side-by-side outputs
-- Basic metadata:
+- Send one prompt to both providers
+- Compare responses side by side
+- Adjustable `max_output_tokens`
+- Gemini thinking controls:
+  - `dynamic`
+  - `off`
+  - `custom`
+- Gemini retry logic for transient failures such as `503 UNAVAILABLE`
+- Visible attempt count in the result cards
+- Basic metadata display:
   - latency
   - input/output/total tokens
+  - Gemini thoughts tokens
   - finish/status info when available
-- Adjustable response cap with `max_output_tokens`
 - Current browser-session history
 - Persistent SQLite history saved to `history.db`
 - Export saved history as JSON
 - Clear saved history from the UI
-- Inspect saved prompts and responses from earlier runs
+- Inspect saved prompts, responses, metadata, and errors from earlier runs
+
+## Persisted metadata
+
+Each saved provider call stores the usual request metadata plus these extra fields when available:
+
+- `thinking_mode`
+- `thinking_budget`
+- `thoughts_tokens`
+- `attempts`
+
+The app auto-migrates older `history.db` files by adding missing columns on startup.
 
 ## Files
 
@@ -50,7 +98,7 @@ pip install -r requirements.txt
 
 ### 3. Create `.env`
 
-Copy `.env.example` to `.env` and fill in your keys.
+Copy `.env.example` to `.env` and fill in your API keys.
 
 macOS / Linux:
 
@@ -81,17 +129,51 @@ Open the local URL shown by Streamlit, usually:
 
 `http://localhost:8501`
 
-## Persistence
+## Sidebar settings
 
-The app creates `history.db` in the same folder as `app.py` and stores one row per provider call. Each click of "Run both models" saves:
+The sidebar includes:
 
-- one OpenAI row
-- one Gemini row
+* OpenAI model
+* Gemini model
+* Max response tokens
+* Gemini thinking budget
+  * `dynamic`: let Gemini decide
+  * `off`: disable Gemini thinking
+  * `custom`: set an explicit Gemini thinking token budget
+* Saved rows to show
+* Show raw API responses
+* Show rough OpenAI cost estimate
 
-That means prompts, responses, token metadata, and errors persist across refreshes and restarts.
+If `custom` Gemini thinking is selected, an additional slider appears for the custom thinking budget.
+
+## Persistence model
+
+The app creates `history.db` in the same folder as `app.py` and stores one row per provider call.
+
+Each click of **Run both models** saves:
+
+* one OpenAI row
+* one Gemini row
+
+That means prompts, responses, token metadata, retries, and errors persist across refreshes and restarts.
+
+## What the app shows
+
+For each run, the UI shows:
+
+* provider response text
+* visible attempt count
+* metadata JSON
+* optional raw API response JSON
+* a quick comparison table across providers
+
+The saved-history section also lets you inspect earlier runs in detail.
 
 ## Notes
 
-- The response token cap is wired in through the sidebar slider and sent to both APIs.
-- This app shows per-call usage metadata, not a guaranteed provider-wide "tokens left" counter.
-- Keep `.env` out of Git.
+* The OpenAI cost display is only a rough estimate based on the hard-coded model pricing table in the app.
+* Gemini can return transient overload errors such as `503 UNAVAILABLE`; the app retries those automatically with exponential backoff.
+* Gemini may also consume tokens as `thoughts_tokens`, which can explain short visible outputs when `max_output_tokens` is small.
+* This app shows per-call usage metadata. It does not show a provider-wide “tokens left” counter.
+* Keep `.env` out of Git.
+* If you already have an older `history.db`, the app upgrades it automatically by adding the newer metadata columns.
