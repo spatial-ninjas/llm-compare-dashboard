@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from typing import Any
 
@@ -564,35 +565,64 @@ def render_route_finding_view() -> None:
             ground_truth_length=ground_truth_length,
         )
 
-        st.write("Calling OpenAI...")
-        openai_result = call_openai(
-            prompt=prompt,
-            model=openai_model,
-            max_output_tokens=max_output_tokens,
-        )
+        st.write("Calling OpenAI and Gemini in parallel...")
 
-        st.write(
-            _provider_status_message(
-                provider="OpenAI",
-                api_result=openai_result,
-            )
-        )
+        provider_futures = {}
 
-        st.write("Calling Gemini...")
-        gemini_result = call_gemini(
-            prompt=prompt,
-            model=gemini_model,
-            max_output_tokens=max_output_tokens,
-            thinking_mode=gemini_thinking_mode,
-            custom_thinking_budget=gemini_custom_thinking_budget,
-        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            provider_futures[
+                executor.submit(
+                    call_openai,
+                    prompt=prompt,
+                    model=openai_model,
+                    max_output_tokens=max_output_tokens,
+                )
+            ] = "OpenAI"
 
-        st.write(
-            _provider_status_message(
-                provider="Gemini",
-                api_result=gemini_result,
-            )
-        )
+            provider_futures[
+                executor.submit(
+                    call_gemini,
+                    prompt=prompt,
+                    model=gemini_model,
+                    max_output_tokens=max_output_tokens,
+                    thinking_mode=gemini_thinking_mode,
+                    custom_thinking_budget=gemini_custom_thinking_budget,
+                )
+            ] = "Gemini"
+
+            results: dict[str, dict[str, Any]] = {}
+
+            for future in as_completed(provider_futures):
+                provider = provider_futures[future]
+
+                try:
+                    results[provider] = future.result()
+                except Exception as exc:
+                    fallback_model = (
+                        openai_model if provider == "OpenAI" else gemini_model
+                    )
+                    results[provider] = {
+                        "ok": False,
+                        "provider": provider,
+                        "text": "",
+                        "error": str(exc),
+                        "metadata": {
+                            "model": fallback_model,
+                            "attempts": None,
+                            "max_output_tokens": max_output_tokens,
+                        },
+                        "raw": None,
+                    }
+
+                st.write(
+                    _provider_status_message(
+                        provider=provider,
+                        api_result=results[provider],
+                    )
+                )
+
+        openai_result = results["OpenAI"]
+        gemini_result = results["Gemini"]
 
         st.write("Saving provider runs...")
         openai_run_id = save_run(prompt, openai_result)
