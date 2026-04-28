@@ -424,3 +424,95 @@ def save_route_evaluation(
         )
         conn.commit()
         return int(cursor.lastrowid)
+
+
+def load_route_evaluations(limit: int = 100) -> pd.DataFrame:
+    """Load recent route evaluation rows for dashboard display."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                re.id,
+                re.created_at,
+                re.task_id,
+                re.run_id,
+                re.provider,
+                re.model,
+                rt.origin,
+                rt.destination,
+                rt.ssal_hash,
+                re.valid_json,
+                re.valid_path,
+                re.exact_path_match,
+                re.candidate_computed_length,
+                re.ground_truth_length,
+                re.relative_length_error,
+                re.declared_length_relative_error,
+                re.node_overlap,
+                re.edge_overlap,
+                re.error_text
+            FROM route_evaluations re
+            JOIN route_tasks rt ON rt.id = re.task_id
+            ORDER BY re.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    if not rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame([dict(row) for row in rows])
+
+
+def export_route_history_rows() -> list[dict[str, Any]]:
+    """Return route-history rows compatible with research.history_evaluation."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                r.id,
+                r.created_at,
+                r.provider,
+                r.model,
+                r.finish_status,
+                r.max_output_tokens,
+                r.prompt,
+                r.response_text,
+                r.error_text,
+                rt.origin,
+                rt.destination,
+                rt.ssal_hash
+            FROM route_evaluations re
+            JOIN route_tasks rt ON rt.id = re.task_id
+            JOIN runs r ON r.id = re.run_id
+            ORDER BY re.id DESC
+            """
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "provider": row["provider"],
+            "model": row["model"],
+            "finish_status": row["finish_status"],
+            "max_output_tokens": row["max_output_tokens"],
+            "origin": row["origin"],
+            "destination": row["destination"],
+            "ssal_hash": row["ssal_hash"],
+            "prompt": row["prompt"],
+            "response_text": row["response_text"] or "",
+            "error_text": row["error_text"],
+        }
+        for row in rows
+    ]
+
+
+def export_route_history_json() -> str:
+    """Serialize route-history export rows as formatted JSON text."""
+    return json.dumps(
+        export_route_history_rows(),
+        ensure_ascii=False,
+        indent=2,
+    )
