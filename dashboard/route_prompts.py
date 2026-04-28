@@ -10,7 +10,7 @@ Input data:
 The SSAL network data is included below. It contains the network topology where each node lists its outgoing connections in this format:
 
 Node_ID:
-  Neighbor_ID {Length, Name, Direction}
+  Neighbor_ID {{Length, Name, Direction}}
 
 Task:
 Find the optimal route from Origin Node ID: {origin} to Destination Node ID: {destination}.
