@@ -1,3 +1,19 @@
+"""SQLite persistence helpers for the dashboard.
+
+The dashboard keeps generic provider calls and route-specific evaluation data
+separate:
+
+- runs stores one row per OpenAI/Gemini API call.
+- route_tasks stores one route-finding task, including origin,
+  destination, SSAL hash, prompt template, and Dijkstra ground truth.
+- route_evaluations stores evaluator metrics for one provider response on
+  one route task.
+
+Route-specific rows link back to generic provider calls through run_id.
+This lets the general prompt-comparison history stay reusable while route
+evaluation can add structured metrics without overloading the runs table.
+"""
+
 import json
 import sqlite3
 import time
@@ -12,12 +28,20 @@ DB_PATH = APP_DIR / "history.db"
 
 
 def get_conn() -> sqlite3.Connection:
+    """Open a SQLite connection with row dictionaries and foreign keys enabled."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def init_db() -> None:
+    """Create or migrate the local dashboard database.
+
+    Existing runs rows are preserved. Missing generic-history columns are
+    added with lightweight SQLite migrations, while route-specific tables are
+    created if they do not already exist.
+    """
     with get_conn() as conn:
         conn.execute(
             """
@@ -57,10 +81,83 @@ def init_db() -> None:
             if column_name not in existing_columns:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}")
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS route_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                ssal_hash TEXT NOT NULL,
+                prompt_template TEXT NOT NULL,
+                ground_truth_path_json TEXT,
+                ground_truth_length REAL
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS route_evaluations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                task_id INTEGER NOT NULL,
+                run_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+
+                valid_json INTEGER,
+                valid_path INTEGER,
+                exact_path_match INTEGER,
+
+                candidate_path_json TEXT,
+                candidate_declared_length REAL,
+                candidate_computed_length REAL,
+
+                ground_truth_path_json TEXT,
+                ground_truth_length REAL,
+
+                absolute_length_error REAL,
+                relative_length_error REAL,
+                declared_length_absolute_error REAL,
+                declared_length_relative_error REAL,
+
+                node_overlap REAL,
+                edge_overlap REAL,
+
+                error_text TEXT,
+                raw_evaluation_json TEXT,
+
+                FOREIGN KEY(task_id) REFERENCES route_tasks(id),
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_route_evaluations_task_id
+            ON route_evaluations(task_id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_route_evaluations_run_id
+            ON route_evaluations(run_id)
+            """
+        )
+
         conn.commit()
 
 
 def save_run(prompt: str, result: Dict[str, Any]) -> None:
+    """Save one generic provider API call.
+
+    This table is shared by the general prompt-comparison mode and the upcoming
+    route-finding mode. Route-specific metrics should be stored separately in
+    route_evaluations.
+    """
     meta = result.get("metadata", {}) or {}
     finish_status = (
         meta.get("finish_reason")
@@ -121,6 +218,7 @@ def save_run(prompt: str, result: Dict[str, Any]) -> None:
 
 
 def load_saved_runs(limit: int = 100) -> pd.DataFrame:
+    """Load recent generic provider runs for the saved-history table."""
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -157,6 +255,7 @@ def load_saved_runs(limit: int = 100) -> pd.DataFrame:
 
 
 def load_run_by_id(run_id: int) -> Optional[Dict[str, Any]]:
+    """Load one generic provider run, including parsed raw response JSON."""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM runs WHERE id = ?",
@@ -177,12 +276,14 @@ def load_run_by_id(run_id: int) -> Optional[Dict[str, Any]]:
 
 
 def delete_all_runs() -> None:
+    """Delete all generic provider runs from local history."""
     with get_conn() as conn:
         conn.execute("DELETE FROM runs")
         conn.commit()
 
 
 def export_runs_json() -> str:
+    """Export generic provider run history as formatted JSON text."""
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
     return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
