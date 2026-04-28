@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
-import streamlit as st
+import json
+from typing import Any
 
+import streamlit as st
+from research.evaluation import evaluate_route_response
+from research.graph import dijkstra_shortest_path
+
+from dashboard.api_clients import call_gemini, call_openai
+from dashboard.db import (
+    save_route_evaluation,
+    save_route_task,
+    save_run,
+)
 from dashboard.network import load_route_network_bundle
 from dashboard.route_prompts import (
     DEFAULT_ROUTE_PROMPT_TEMPLATE,
@@ -11,11 +22,169 @@ from dashboard.route_prompts import (
 )
 
 
+def _format_metric(value: Any, digits: int = 3) -> str:
+    """Format route evaluation metrics for display."""
+    if value is None:
+        return "—"
+
+    if isinstance(value, float):
+        return f"{value:.{digits}f}"
+
+    return str(value)
+
+
+def _get_response_text(api_result: dict[str, Any]) -> str:
+    """Return provider response text from an API result."""
+    return str(api_result.get("text") or "")
+
+
+def _get_result_model(api_result: dict[str, Any], fallback: str) -> str:
+    """Return model name from API result metadata."""
+    metadata = api_result.get("metadata") or {}
+    return str(metadata.get("model") or fallback)
+
+
+def _ground_truth_length(ground_truth: dict[str, Any]) -> float | None:
+    """Return ground-truth length from known Dijkstra result keys."""
+    value = ground_truth.get("total_length", ground_truth.get("length"))
+
+    if value is None:
+        return None
+
+    return float(value)
+
+
+def _provider_error_evaluation(api_result: dict[str, Any]) -> dict[str, Any]:
+    """Build a route-evaluation-like row for failed provider calls."""
+    return {
+        "status": "skipped",
+        "reason": "provider_call_failed",
+        "valid_json": None,
+        "valid_path": None,
+        "exact_path_match": None,
+        "candidate_path": None,
+        "candidate_declared_length": None,
+        "candidate_computed_length": None,
+        "ground_truth_path": None,
+        "ground_truth_length": None,
+        "absolute_length_error": None,
+        "relative_length_error": None,
+        "declared_length_absolute_error": None,
+        "declared_length_relative_error": None,
+        "node_overlap": None,
+        "edge_overlap": None,
+        "error_text": api_result.get("error") or "Provider call failed.",
+    }
+
+
+def _provider_status_message(
+    *,
+    provider: str,
+    api_result: dict[str, Any],
+) -> str:
+    """Return a compact provider call status message."""
+    attempts = (api_result.get("metadata") or {}).get("attempts")
+    outcome = "finished" if api_result.get("ok") else "failed"
+
+    if attempts:
+        return f"{provider} call {outcome} after {attempts} attempt(s)."
+
+    return f"{provider} call {outcome}."
+
+
+def render_save_summary(
+    *,
+    task_id: int,
+    openai_run_id: int,
+    gemini_run_id: int,
+) -> None:
+    """Show a compact persistence confirmation after a route test."""
+    st.success("Route test saved to local history.")
+
+    st.caption(
+        "Saved one route task, two generic provider runs, "
+        "and two route evaluation rows."
+    )
+
+    with st.expander("Saved row IDs"):
+        st.json(
+            {
+                "route_task_id": task_id,
+                "openai_run_id": openai_run_id,
+                "gemini_run_id": gemini_run_id,
+            }
+        )
+
+
+def render_route_eval_card(
+    *,
+    title: str,
+    api_result: dict[str, Any],
+    evaluation: dict[str, Any] | None,
+) -> None:
+    """Render one provider result and route evaluation summary."""
+    st.subheader(title)
+
+    if not api_result.get("ok"):
+        st.error(api_result.get("error") or "Provider call failed.")
+
+        with st.expander("Raw provider result"):
+            st.json(api_result)
+
+        if evaluation is not None:
+            with st.expander("Saved route evaluation JSON"):
+                st.json(evaluation)
+
+        return
+
+    if evaluation is None:
+        st.warning("No route evaluation available.")
+        return
+
+    if evaluation.get("status") == "evaluated":
+        st.success("Evaluation completed")
+    else:
+        st.warning(f"Evaluation status: {evaluation.get('status')}")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(f"Valid JSON: `{evaluation.get('valid_json')}`")
+        st.write(f"Valid path: `{evaluation.get('valid_path')}`")
+        st.write(f"Exact path match: `{evaluation.get('exact_path_match')}`")
+        st.write(
+            "Candidate length: "
+            f"`{_format_metric(evaluation.get('candidate_computed_length'))}`"
+        )
+
+    with col2:
+        st.write(
+            "Ground-truth length: "
+            f"`{_format_metric(evaluation.get('ground_truth_length'))}`"
+        )
+        st.write(
+            "Relative length error: "
+            f"`{_format_metric(evaluation.get('relative_length_error'))}`"
+        )
+        st.write(f"Node overlap: `{_format_metric(evaluation.get('node_overlap'))}`")
+        st.write(f"Edge overlap: `{_format_metric(evaluation.get('edge_overlap'))}`")
+
+    if evaluation.get("reason"):
+        st.write(f"Reason: `{evaluation.get('reason')}`")
+
+    with st.expander("Model response"):
+        st.text(_get_response_text(api_result))
+
+    with st.expander("Raw evaluation JSON"):
+        st.json(evaluation)
+
+
 def render_route_finding_view() -> None:
     """Render the route-finding evaluation view."""
     st.header("Route-finding evaluation")
     st.caption(
-        "Load the SSAL-native route network and prepare route-finding evaluation."
+        "Load the SSAL-native route network, generate a route prompt, "
+        "run both models, and evaluate their routes."
     )
 
     try:
@@ -29,6 +198,66 @@ def render_route_finding_view() -> None:
         return
 
     nodes = bundle.graph.nodes()
+
+    with st.sidebar:
+        st.header("Route settings")
+
+        openai_model = st.selectbox(
+            "OpenAI model",
+            options=[
+                "gpt-5.4-mini",
+                "gpt-4.1-mini",
+                "gpt-5.4",
+            ],
+            index=0,
+        )
+
+        gemini_model = st.selectbox(
+            "Gemini model",
+            options=[
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite",
+                "gemini-2.5-pro",
+            ],
+            index=0,
+        )
+
+        max_output_tokens = st.slider(
+            "Max response tokens",
+            min_value=256,
+            max_value=8192,
+            value=2048,
+            step=256,
+        )
+
+        gemini_thinking_mode = st.selectbox(
+            "Gemini thinking budget",
+            options=[
+                "dynamic",
+                "off",
+                "custom",
+            ],
+            index=0,
+            help=(
+                "Dynamic lets Gemini decide. Off disables thinking. "
+                "Custom sets an explicit thinking token budget."
+            ),
+        )
+
+        gemini_custom_thinking_budget = None
+        if gemini_thinking_mode == "custom":
+            gemini_custom_thinking_budget = st.slider(
+                "Custom Gemini thinking budget",
+                min_value=0,
+                max_value=8192,
+                value=1024,
+                step=256,
+            )
+
+        st.divider()
+        st.caption("Route network")
+        st.write(f"SSAL hash: `{bundle.ssal_hash[:12]}`")
+        st.write(f"Nodes: `{len(nodes)}`")
 
     st.subheader("Route task")
 
@@ -49,16 +278,25 @@ def render_route_finding_view() -> None:
         st.warning("Origin and destination should be different.")
         return
 
-    st.subheader("Prompt template")
+    ground_truth = dijkstra_shortest_path(bundle.graph, origin, destination)
 
-    template = st.text_area(
-        "Route prompt template",
-        value=DEFAULT_ROUTE_PROMPT_TEMPLATE,
-        height=360,
-        help=(
-            "Available placeholders: {origin}, {destination}, {ssal_text}. "
-            "Escape literal JSON braces as {{ and }}."
-        ),
+    if not ground_truth.get("ok"):
+        st.error(f"No Dijkstra path found: {ground_truth.get('reason')}")
+        return
+
+    ground_truth_length = _ground_truth_length(ground_truth)
+
+    st.write(f"Ground-truth length: `{_format_metric(ground_truth_length, digits=1)}`")
+
+    with st.expander("Ground-truth path"):
+        st.code(
+            json.dumps(ground_truth["path"], indent=2, ensure_ascii=False),
+            language="json",
+        )
+
+    template = st.session_state.get(
+        "route_prompt_template",
+        DEFAULT_ROUTE_PROMPT_TEMPLATE,
     )
 
     try:
@@ -75,33 +313,172 @@ def render_route_finding_view() -> None:
         st.error(f"Prompt template formatting failed: {exc}")
         return
 
-    st.subheader("Generated prompt")
+    with st.expander("Debug / prompt and network details", expanded=False):
+        st.subheader("Prompt template")
 
-    st.caption(
-        "This is the full prompt that will be sent to the models in the next stage."
-    )
+        edited_template = st.text_area(
+            "Route prompt template",
+            value=template,
+            height=360,
+            help=(
+                "Available placeholders: {origin}, {destination}, {ssal_text}. "
+                "Escape literal JSON braces as {{ and }}."
+            ),
+        )
 
-    st.text_area(
-        "Generated route prompt",
-        value=prompt,
-        height=420,
-    )
+        if edited_template != template:
+            st.session_state.route_prompt_template = edited_template
+            st.rerun()
 
-    st.download_button(
-        "Download generated prompt",
-        data=prompt,
-        file_name=f"route_prompt_{origin}_to_{destination}.txt",
-        mime="text/plain",
+        st.subheader("Generated prompt")
+
+        st.caption("This is the full prompt that will be sent to the models.")
+
+        st.text_area(
+            "Generated route prompt",
+            value=prompt,
+            height=420,
+        )
+
+        st.download_button(
+            "Download generated prompt",
+            data=prompt,
+            file_name=f"route_prompt_{origin}_to_{destination}.txt",
+            mime="text/plain",
+            width="stretch",
+        )
+
+        st.subheader("Network")
+        st.write(f"GeoPackage: `{bundle.gpkg_path}`")
+        st.write(f"Edges layer: `{bundle.edges_layer}`")
+        st.write(f"Nodes layer: `{bundle.nodes_layer}`")
+        st.write(f"SSAL hash: `{bundle.ssal_hash}`")
+        st.write(f"Node count: `{len(nodes)}`")
+
+        st.subheader("SSAL preview")
+        preview = "\n".join(bundle.ssal_text.splitlines()[:40])
+        st.code(preview, language="text")
+
+    run_button = st.button(
+        "Run route test",
+        type="primary",
         width="stretch",
     )
 
-    st.subheader("Network")
-    st.write(f"GeoPackage: `{bundle.gpkg_path}`")
-    st.write(f"Edges layer: `{bundle.edges_layer}`")
-    st.write(f"Nodes layer: `{bundle.nodes_layer}`")
-    st.write(f"SSAL hash: `{bundle.ssal_hash}`")
-    st.write(f"Node count: `{len(nodes)}`")
+    if not run_button:
+        return
 
-    with st.expander("SSAL preview"):
-        preview = "\n".join(bundle.ssal_text.splitlines()[:40])
-        st.code(preview, language="text")
+    with st.status("Running route test...", expanded=True) as status:
+        st.write("Saving route task...")
+
+        task_id = save_route_task(
+            origin=origin,
+            destination=destination,
+            ssal_hash=bundle.ssal_hash,
+            prompt_template=template,
+            ground_truth_path=ground_truth["path"],
+            ground_truth_length=ground_truth_length,
+        )
+
+        st.write("Calling OpenAI...")
+        openai_result = call_openai(
+            prompt=prompt,
+            model=openai_model,
+            max_output_tokens=max_output_tokens,
+        )
+
+        st.write(
+            _provider_status_message(
+                provider="OpenAI",
+                api_result=openai_result,
+            )
+        )
+
+        st.write("Calling Gemini...")
+        gemini_result = call_gemini(
+            prompt=prompt,
+            model=gemini_model,
+            max_output_tokens=max_output_tokens,
+            thinking_mode=gemini_thinking_mode,
+            custom_thinking_budget=gemini_custom_thinking_budget,
+        )
+
+        st.write(
+            _provider_status_message(
+                provider="Gemini",
+                api_result=gemini_result,
+            )
+        )
+
+        st.write("Saving provider runs...")
+        openai_run_id = save_run(prompt, openai_result)
+        gemini_run_id = save_run(prompt, gemini_result)
+
+        st.write("Evaluating OpenAI route...")
+        if openai_result.get("ok"):
+            openai_evaluation = evaluate_route_response(
+                response_text=_get_response_text(openai_result),
+                graph=bundle.graph,
+                origin=origin,
+                destination=destination,
+            )
+        else:
+            openai_evaluation = _provider_error_evaluation(openai_result)
+
+        st.write("Evaluating Gemini route...")
+        if gemini_result.get("ok"):
+            gemini_evaluation = evaluate_route_response(
+                response_text=_get_response_text(gemini_result),
+                graph=bundle.graph,
+                origin=origin,
+                destination=destination,
+            )
+        else:
+            gemini_evaluation = _provider_error_evaluation(gemini_result)
+
+        st.write("Saving route evaluations...")
+        save_route_evaluation(
+            task_id=task_id,
+            run_id=openai_run_id,
+            provider="OpenAI",
+            model=_get_result_model(openai_result, openai_model),
+            evaluation=openai_evaluation,
+        )
+
+        save_route_evaluation(
+            task_id=task_id,
+            run_id=gemini_run_id,
+            provider="Gemini",
+            model=_get_result_model(gemini_result, gemini_model),
+            evaluation=gemini_evaluation,
+        )
+
+        status.update(
+            label="Route test completed.",
+            state="complete",
+            expanded=False,
+        )
+
+    render_save_summary(
+        task_id=task_id,
+        openai_run_id=openai_run_id,
+        gemini_run_id=gemini_run_id,
+    )
+
+    st.subheader("Route evaluation results")
+
+    result_col1, result_col2 = st.columns(2)
+
+    with result_col1:
+        render_route_eval_card(
+            title="OpenAI",
+            api_result=openai_result,
+            evaluation=openai_evaluation,
+        )
+
+    with result_col2:
+        render_route_eval_card(
+            title="Gemini",
+            api_result=gemini_result,
+            evaluation=gemini_evaluation,
+        )
