@@ -35,6 +35,33 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _json_dumps(value: Any) -> str | None:
+    """Serialize optional JSON data for SQLite storage."""
+    if value is None:
+        return None
+
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _json_loads(value: str | None) -> Any:
+    """Deserialize optional JSON data from SQLite storage."""
+    if not value:
+        return None
+
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+def _bool_to_int(value: Any) -> int | None:
+    """Convert optional bool-like values to SQLite integer flags."""
+    if value is None:
+        return None
+
+    return 1 if bool(value) else 0
+
+
 def init_db() -> None:
     """Create or migrate the local dashboard database.
 
@@ -151,12 +178,12 @@ def init_db() -> None:
         conn.commit()
 
 
-def save_run(prompt: str, result: Dict[str, Any]) -> None:
-    """Save one generic provider API call.
+def save_run(prompt: str, result: Dict[str, Any]) -> int:
+    """Save one generic provider API call and return the inserted run ID.
 
     This table is shared by the general prompt-comparison mode and the upcoming
     route-finding mode. Route-specific metrics should be stored separately in
-    route_evaluations.
+    route_evaluations and linked back through the returned run_id.
     """
     meta = result.get("metadata", {}) or {}
     finish_status = (
@@ -170,7 +197,7 @@ def save_run(prompt: str, result: Dict[str, Any]) -> None:
     )
 
     with get_conn() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO runs (
                 created_at,
@@ -207,7 +234,7 @@ def save_run(prompt: str, result: Dict[str, Any]) -> None:
                 finish_status,
                 result.get("text"),
                 result.get("error"),
-                json.dumps(result.get("raw"), ensure_ascii=False) if result.get("raw") is not None else None,
+                _json_dumps(result.get("raw")),
                 meta.get("thinking_mode"),
                 meta.get("thinking_budget"),
                 meta.get("thoughts_tokens"),
@@ -215,6 +242,7 @@ def save_run(prompt: str, result: Dict[str, Any]) -> None:
             ),
         )
         conn.commit()
+        return int(cursor.lastrowid)
 
 
 def load_saved_runs(limit: int = 100) -> pd.DataFrame:
