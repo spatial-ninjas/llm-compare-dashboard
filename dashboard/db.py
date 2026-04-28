@@ -315,3 +315,112 @@ def export_runs_json() -> str:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
     return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
+
+
+def save_route_task(
+    *,
+    origin: str,
+    destination: str,
+    ssal_hash: str,
+    prompt_template: str,
+    ground_truth_path: list[str] | None = None,
+    ground_truth_length: float | None = None,
+) -> int:
+    """Save one route-finding task and return the inserted task ID.
+
+    The prompt template is stored without the full SSAL text to avoid
+    duplicating large network data in every route task row.
+    """
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO route_tasks (
+                created_at,
+                origin,
+                destination,
+                ssal_hash,
+                prompt_template,
+                ground_truth_path_json,
+                ground_truth_length
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                origin,
+                destination,
+                ssal_hash,
+                prompt_template,
+                _json_dumps(ground_truth_path),
+                ground_truth_length,
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def save_route_evaluation(
+    *,
+    task_id: int,
+    run_id: int,
+    provider: str,
+    model: str,
+    evaluation: dict[str, Any],
+) -> int:
+    """Save one route evaluator result and return the inserted evaluation ID.
+
+    Compact metric columns are stored for querying and display. The complete
+    evaluator result is also stored as JSON for later debugging.
+    """
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO route_evaluations (
+                created_at,
+                task_id,
+                run_id,
+                provider,
+                model,
+                valid_json,
+                valid_path,
+                exact_path_match,
+                candidate_path_json,
+                candidate_declared_length,
+                candidate_computed_length,
+                ground_truth_path_json,
+                ground_truth_length,
+                absolute_length_error,
+                relative_length_error,
+                declared_length_absolute_error,
+                declared_length_relative_error,
+                node_overlap,
+                edge_overlap,
+                error_text,
+                raw_evaluation_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                task_id,
+                run_id,
+                provider,
+                model,
+                _bool_to_int(evaluation.get("valid_json")),
+                _bool_to_int(evaluation.get("valid_path")),
+                _bool_to_int(evaluation.get("exact_path_match")),
+                _json_dumps(evaluation.get("candidate_path")),
+                evaluation.get("candidate_declared_length"),
+                evaluation.get("candidate_computed_length"),
+                _json_dumps(evaluation.get("ground_truth_path")),
+                evaluation.get("ground_truth_length"),
+                evaluation.get("absolute_length_error"),
+                evaluation.get("relative_length_error"),
+                evaluation.get("declared_length_absolute_error"),
+                evaluation.get("declared_length_relative_error"),
+                evaluation.get("node_overlap"),
+                evaluation.get("edge_overlap"),
+                evaluation.get("error_text") or evaluation.get("reason"),
+                _json_dumps(evaluation),
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
