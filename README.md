@@ -14,6 +14,27 @@ streamlit run app.py
 > Never commit API keys, `.env`, `history.db`, or any other secrets/local state to Git.
 > If an API key is accidentally committed, assume it is compromised, revoke it, and generate a new one.
 
+## Version note
+
+This repository is currently at `v0.1.0`.
+
+This is the first usable dashboard milestone with:
+
+- general OpenAI/Gemini prompt comparison
+- persistent local SQLite history
+- editable local dependency on the sibling `research` repo
+- SSAL-native route-finding evaluation mode
+- local `NetworkBundle` loading
+- route prompt generation
+- parallel provider calls
+- route evaluation display and JSON export
+
+The route-finding mode requires the sibling `research` repository at `v0.1.0` or a compatible version. In the expected local layout, the dashboard installs it through:
+
+```txt
+-e ../research
+```
+
 ## Why this exists
 
 The dashboard has two modes:
