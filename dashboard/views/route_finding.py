@@ -11,6 +11,7 @@ from research.graph import dijkstra_shortest_path
 
 from dashboard.api_clients import call_gemini, call_openai
 from dashboard.db import (
+    export_route_history_json,
     save_route_evaluation,
     save_route_task,
     save_run,
@@ -92,6 +93,54 @@ def _provider_status_message(
     return f"{provider} call {outcome}."
 
 
+def _is_satisfactory_evaluation(evaluation: dict[str, Any]) -> bool:
+    """Return whether a route evaluation should be treated as satisfactory."""
+    return (
+        evaluation.get("status") == "evaluated"
+        and evaluation.get("valid_json") is True
+        and evaluation.get("valid_path") is True
+        and evaluation.get("exact_path_match") is True
+    )
+
+
+def _evaluation_download_payload(
+    *,
+    task_id: int,
+    origin: str,
+    destination: str,
+    ssal_hash: str,
+    openai_run_id: int,
+    gemini_run_id: int,
+    openai_result: dict[str, Any],
+    gemini_result: dict[str, Any],
+    openai_evaluation: dict[str, Any],
+    gemini_evaluation: dict[str, Any],
+) -> str:
+    """Return a formatted JSON payload for the latest route test."""
+    return json.dumps(
+        {
+            "task": {
+                "id": task_id,
+                "origin": origin,
+                "destination": destination,
+                "ssal_hash": ssal_hash,
+            },
+            "openai": {
+                "run_id": openai_run_id,
+                "provider_result": openai_result,
+                "evaluation": openai_evaluation,
+            },
+            "gemini": {
+                "run_id": gemini_run_id,
+                "provider_result": gemini_result,
+                "evaluation": gemini_evaluation,
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def render_save_summary(
     *,
     task_id: int,
@@ -141,8 +190,10 @@ def render_route_eval_card(
         st.warning("No route evaluation available.")
         return
 
-    if evaluation.get("status") == "evaluated":
-        st.success("Evaluation completed")
+    if _is_satisfactory_evaluation(evaluation):
+        st.success("Evaluation satisfactory")
+    elif evaluation.get("status") == "evaluated":
+        st.warning("Evaluation completed, but the route was not an exact valid match")
     else:
         st.warning(f"Evaluation status: {evaluation.get('status')}")
 
@@ -258,6 +309,16 @@ def render_route_finding_view() -> None:
         st.caption("Route network")
         st.write(f"SSAL hash: `{bundle.ssal_hash[:12]}`")
         st.write(f"Nodes: `{len(nodes)}`")
+
+        st.divider()
+        st.caption("Route history export")
+        st.download_button(
+            "Download route history JSON",
+            data=export_route_history_json(),
+            file_name="route_history_export.json",
+            mime="application/json",
+            width="stretch",
+        )
 
     st.subheader("Route task")
 
@@ -463,6 +524,25 @@ def render_route_finding_view() -> None:
         task_id=task_id,
         openai_run_id=openai_run_id,
         gemini_run_id=gemini_run_id,
+    )
+
+    st.download_button(
+        "Download this route test as JSON",
+        data=_evaluation_download_payload(
+            task_id=task_id,
+            origin=origin,
+            destination=destination,
+            ssal_hash=bundle.ssal_hash,
+            openai_run_id=openai_run_id,
+            gemini_run_id=gemini_run_id,
+            openai_result=openai_result,
+            gemini_result=gemini_result,
+            openai_evaluation=openai_evaluation,
+            gemini_evaluation=gemini_evaluation,
+        ),
+        file_name=f"route_evaluation_{origin}_to_{destination}.json",
+        mime="application/json",
+        width="stretch",
     )
 
     st.subheader("Route evaluation results")
