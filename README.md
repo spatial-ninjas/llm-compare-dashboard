@@ -210,29 +210,52 @@ Open the local URL shown by Streamlit, usually:
 
 ## Route-finding network configuration
 
-The route-finding mode is expected to resolve network data in this order:
+The route-finding mode loads the local routing network through the sibling `research` repo.
+
+The local loading path is:
 
 ```text
-If NETWORK_GPKG_PATH exists:
-  use the local GeoPackage file
-
-Else if NETWORK_GPKG_URL is set:
-  download or reuse the cached GeoPackage file
-
-Else:
-  show a dashboard error explaining that network data is not configured
+GeoPackage
+  ↓
+research.network_loader.load_network_bundle_from_gpkg()
+  ↓
+SSAL text
+  ↓
+SSAL-derived graph
+  ↓
+NetworkBundle
 ```
 
-Current route-finding environment variables:
+The dashboard does not parse the GeoPackage or build the graph itself. It reuses the shared research-side network loader so the dashboard and research evaluator use the same SSAL-native representation.
 
-- `NETWORK_GPKG_PATH` — local path to the GeoPackage network file
-- `NETWORK_GPKG_URL` — optional remote GeoPackage URL for hosted/deployed environments
-- `NETWORK_GPKG_SHA256` — optional checksum for downloaded/cached network files
-- `NETWORK_EDGES_LAYER` — GeoPackage edge layer name
-- `NETWORK_NODES_LAYER` — GeoPackage node layer name
-- `NETWORK_CACHE_DIR` — cache directory for downloaded network files
+For local development, configure these variables in `.env`:
 
-The default local path assumes the sibling `research` repo contains the Southern Helsinki routing-network artifact.
+```env
+NETWORK_GPKG_PATH=../research/data/raw/routing_networks/osm_southern_helsinki_slimmed_cropped.gpkg
+NETWORK_EDGES_LAYER=slimmed_cropped_edges
+NETWORK_NODES_LAYER=slimmed_cropped_nodes
+```
+
+The route-finding view currently supports local GeoPackage loading. When the route mode is opened, it loads the configured GeoPackage into a cached `NetworkBundle` and displays basic network metadata:
+
+* GeoPackage path
+* edge layer
+* node layer
+* SSAL hash
+* node count
+* SSAL preview
+
+If `NETWORK_GPKG_PATH` is missing or invalid, the route-finding view shows a clear Streamlit error explaining which network configuration should be checked.
+
+The `.env.example` also includes future remote-loading variables:
+
+```env
+NETWORK_GPKG_URL=
+NETWORK_GPKG_SHA256=
+NETWORK_CACHE_DIR=.cache/network
+```
+
+Those are reserved for the optional remote GeoPackage fetching/caching workflow. Local path mode is the current implemented behavior.
 
 ## Sidebar settings
 
