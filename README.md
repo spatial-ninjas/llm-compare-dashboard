@@ -22,6 +22,36 @@ Instead of writing separate scripts or manually copying prompts between provider
 - inspect token and latency metadata
 - keep a persistent local history of earlier runs
 
+The dashboard is also being prepared for a route-finding evaluation mode. That mode will reuse the sibling `research` repository for SSAL-native graph loading, Dijkstra ground truth, and route-response evaluation.
+
+## Relationship to the research repo
+
+The route-finding workflow depends on reusable modules from the sibling [`research`](https://github.com/spatial-ninjas/research) repository.
+
+Expected local folder layout:
+
+```text
+spatial-ninjas/
+  research/
+  llm-compare-dashboard/
+```
+
+The dashboard installs `research` as an editable local dependency through `requirements.txt`:
+
+```txt
+-e ../research
+```
+
+This lets the dashboard import the shared evaluator foundation directly, for example:
+
+```python
+from research.graph import build_graph_from_ssal
+from research.evaluation import evaluate_route_response
+from research.network_loader import load_network_bundle_from_gpkg
+```
+
+If your folder layout is different, either adjust the editable dependency path in `requirements.txt` or install the research repo manually with the correct path.
+
 ## What the app does
 
 For each run, the app sends your prompt to both providers, shows the results in the browser, and stores the run in a local SQLite database.
@@ -55,6 +85,7 @@ The app also includes controls for:
 - Export saved history as JSON
 - Clear saved history from the UI
 - Inspect saved prompts, responses, metadata, and errors from earlier runs
+- Local route-finding network configuration for the upcoming SSAL-native route mode
 
 ## Persisted metadata
 
@@ -76,7 +107,19 @@ The app auto-migrates older `history.db` files by adding missing columns on star
 
 ## Setup
 
-### 1. Create and activate a virtual environment
+### 1. Clone or place both repos in the expected layout
+
+The default local dependency path assumes this layout:
+
+```text
+spatial-ninjas/
+  research/
+  llm-compare-dashboard/
+```
+
+From inside `llm-compare-dashboard`, `../research` should point to the sibling research repo.
+
+### 2. Create and activate a virtual environment
 
 macOS / Linux:
 
@@ -92,13 +135,34 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 ```
 
-### 2. Install dependencies
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Create `.env`
+This also installs the sibling `research` repo in editable mode through:
+
+```txt
+-e ../research
+```
+
+### 4. Run smoke tests for the research dependency
+
+After installing dependencies, verify that the dashboard can import the shared research package:
+
+```bash
+python -c "from research.graph import build_graph_from_ssal; print('ok')"
+```
+
+Recommended additional checks:
+
+```bash
+python -c "from research.evaluation import evaluate_route_response; print('evaluation ok')"
+python -c "from research.network_loader import load_network_bundle_from_gpkg; print('network loader ok')"
+```
+
+### 5. Create `.env`
 
 Copy `.env.example` to `.env` and fill in your API keys.
 
@@ -117,11 +181,24 @@ Copy-Item .env.example .env
 Then edit `.env`:
 
 ```env
+# API keys
 OPENAI_API_KEY=your_openai_api_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
+
+# Route-finding network data
+NETWORK_GPKG_PATH=../research/data/raw/routing_networks/osm_southern_helsinki_slimmed_cropped.gpkg
+NETWORK_GPKG_URL=
+NETWORK_GPKG_SHA256=
+NETWORK_EDGES_LAYER=slimmed_cropped_edges
+NETWORK_NODES_LAYER=slimmed_cropped_nodes
+NETWORK_CACHE_DIR=.cache/network
 ```
 
-### 4. Run the app
+For local development, `NETWORK_GPKG_PATH` should point to the GeoPackage file in the sibling `research` repo.
+
+Later deployment-oriented workflows can use `NETWORK_GPKG_URL`, `NETWORK_GPKG_SHA256`, and `NETWORK_CACHE_DIR` to download and cache the network file.
+
+### 6. Run the app
 
 ```bash
 streamlit run app.py
@@ -130,6 +207,32 @@ streamlit run app.py
 Open the local URL shown by Streamlit, usually:
 
 `http://localhost:8501`
+
+## Route-finding network configuration
+
+The route-finding mode is expected to resolve network data in this order:
+
+```text
+If NETWORK_GPKG_PATH exists:
+  use the local GeoPackage file
+
+Else if NETWORK_GPKG_URL is set:
+  download or reuse the cached GeoPackage file
+
+Else:
+  show a dashboard error explaining that network data is not configured
+```
+
+Current route-finding environment variables:
+
+- `NETWORK_GPKG_PATH` — local path to the GeoPackage network file
+- `NETWORK_GPKG_URL` — optional remote GeoPackage URL for hosted/deployed environments
+- `NETWORK_GPKG_SHA256` — optional checksum for downloaded/cached network files
+- `NETWORK_EDGES_LAYER` — GeoPackage edge layer name
+- `NETWORK_NODES_LAYER` — GeoPackage node layer name
+- `NETWORK_CACHE_DIR` — cache directory for downloaded network files
+
+The default local path assumes the sibling `research` repo contains the Southern Helsinki routing-network artifact.
 
 ## Sidebar settings
 
@@ -178,4 +281,5 @@ The saved-history section also lets you inspect earlier runs in detail.
 * Gemini may also consume tokens as `thoughts_tokens`, which can explain short visible outputs when `max_output_tokens` is small.
 * This app shows per-call usage metadata. It does not show a provider-wide “tokens left” counter.
 * Keep `.env` out of Git.
+* Keep `history.db` out of Git.
 * If you already have an older `history.db`, the app upgrades it automatically by adding the newer metadata columns.
