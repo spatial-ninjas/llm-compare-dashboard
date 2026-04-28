@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 from research.evaluation import evaluate_route_response
 from research.graph import dijkstra_shortest_path
@@ -23,6 +24,10 @@ from dashboard.route_prompts import (
 )
 
 
+DEFAULT_ORIGIN_NODE = "1004552350"
+DEFAULT_DESTINATION_NODE = "12143305053"
+
+
 def _format_metric(value: Any, digits: int = 3) -> str:
     """Format route evaluation metrics for display."""
     if value is None:
@@ -32,6 +37,42 @@ def _format_metric(value: Any, digits: int = 3) -> str:
         return f"{value:.{digits}f}"
 
     return str(value)
+
+
+def _format_bool(value: Any) -> str:
+    """Format optional boolean values for compact UI display."""
+    if value is True:
+        return "✅ Yes"
+    if value is False:
+        return "⚠️ No"
+    return "—"
+
+
+def _node_default_index(
+    nodes: list[str],
+    preferred_node: str,
+    fallback_index: int,
+) -> int:
+    """Return the selectbox index for a preferred node, with a safe fallback."""
+    try:
+        return nodes.index(preferred_node)
+    except ValueError:
+        return min(fallback_index, max(len(nodes) - 1, 0))
+
+
+def _evaluation_status_label(evaluation: dict[str, Any]) -> str:
+    """Return a compact human-readable evaluation status label."""
+    if _is_satisfactory_evaluation(evaluation):
+        return "✅ Satisfactory"
+
+    if evaluation.get("status") == "evaluated":
+        return "⚠️ Needs review"
+
+    reason = evaluation.get("reason")
+    if reason:
+        return f"⚠️ {reason}"
+
+    return str(evaluation.get("status") or "—")
 
 
 def _get_response_text(api_result: dict[str, Any]) -> str:
@@ -164,6 +205,77 @@ def render_save_summary(
             }
         )
 
+
+
+def render_route_eval_summary_table(
+    *,
+    openai_evaluation: dict[str, Any],
+    gemini_evaluation: dict[str, Any],
+) -> None:
+    """Render a compact metric-by-metric route evaluation comparison."""
+    rows = [
+        {
+            "Metric": "Status",
+            "OpenAI": _evaluation_status_label(openai_evaluation),
+            "Gemini": _evaluation_status_label(gemini_evaluation),
+        },
+        {
+            "Metric": "Valid JSON",
+            "OpenAI": _format_bool(openai_evaluation.get("valid_json")),
+            "Gemini": _format_bool(gemini_evaluation.get("valid_json")),
+        },
+        {
+            "Metric": "Valid path",
+            "OpenAI": _format_bool(openai_evaluation.get("valid_path")),
+            "Gemini": _format_bool(gemini_evaluation.get("valid_path")),
+        },
+        {
+            "Metric": "Exact shortest path",
+            "OpenAI": _format_bool(openai_evaluation.get("exact_path_match")),
+            "Gemini": _format_bool(gemini_evaluation.get("exact_path_match")),
+        },
+        {
+            "Metric": "Candidate length",
+            "OpenAI": _format_metric(openai_evaluation.get("candidate_computed_length")),
+            "Gemini": _format_metric(gemini_evaluation.get("candidate_computed_length")),
+        },
+        {
+            "Metric": "Ground-truth length",
+            "OpenAI": _format_metric(openai_evaluation.get("ground_truth_length")),
+            "Gemini": _format_metric(gemini_evaluation.get("ground_truth_length")),
+        },
+        {
+            "Metric": "Relative length error",
+            "OpenAI": _format_metric(openai_evaluation.get("relative_length_error")),
+            "Gemini": _format_metric(gemini_evaluation.get("relative_length_error")),
+        },
+        {
+            "Metric": "Node overlap",
+            "OpenAI": _format_metric(openai_evaluation.get("node_overlap")),
+            "Gemini": _format_metric(gemini_evaluation.get("node_overlap")),
+        },
+        {
+            "Metric": "Edge overlap",
+            "OpenAI": _format_metric(openai_evaluation.get("edge_overlap")),
+            "Gemini": _format_metric(gemini_evaluation.get("edge_overlap")),
+        },
+        {
+            "Metric": "Reason",
+            "OpenAI": openai_evaluation.get("reason") or "—",
+            "Gemini": gemini_evaluation.get("reason") or "—",
+        },
+    ]
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Metric": st.column_config.TextColumn("Metric", width="medium"),
+            "OpenAI": st.column_config.TextColumn("OpenAI", width="medium"),
+            "Gemini": st.column_config.TextColumn("Gemini", width="medium"),
+        },
+    )
 
 def render_route_eval_card(
     *,
@@ -325,14 +437,25 @@ def render_route_finding_view() -> None:
     col1, col2 = st.columns(2)
 
     with col1:
-        origin = st.selectbox("Origin node", nodes, index=0)
+        origin = st.selectbox(
+            "Origin node",
+            nodes,
+            index=_node_default_index(
+                nodes,
+                preferred_node=DEFAULT_ORIGIN_NODE,
+                fallback_index=0,
+            ),
+        )
 
     with col2:
-        destination_index = 1 if len(nodes) > 1 else 0
         destination = st.selectbox(
             "Destination node",
             nodes,
-            index=destination_index,
+            index=_node_default_index(
+                nodes,
+                preferred_node=DEFAULT_DESTINATION_NODE,
+                fallback_index=1,
+            ),
         )
 
     if origin == destination:
@@ -546,6 +669,11 @@ def render_route_finding_view() -> None:
     )
 
     st.subheader("Route evaluation results")
+
+    render_route_eval_summary_table(
+        openai_evaluation=openai_evaluation,
+        gemini_evaluation=gemini_evaluation,
+    )
 
     result_col1, result_col2 = st.columns(2)
 
