@@ -551,14 +551,30 @@ llm-compare-dashboard/
     db.py                        SQLite persistence helpers
     network.py                   Local NetworkBundle loading
     route_prompts.py             Route prompt template and builder
+    route_visualization.py       Reusable Folium route visualisation helpers
     views/
       general.py                 General prompt-comparison view
       route_finding.py           Route-finding view for new route tests
       route_history.py           Saved route-evaluation history view
 
+  scripts/
+    smoke_route_visualization.py Standalone route visualisation smoke script
+
   docs/
     screenshot-main.png          README screenshot
 ```
+
+
+## Route visualisation smoke test
+
+The reusable route visualisation interface can be checked without running provider calls:
+
+```bash
+python scripts/smoke_route_visualization.py
+open route_visualization_test.html
+```
+
+The smoke map disables online base-map tiles by default, so it avoids OpenStreetMap tile-server blocking when opened from a local HTML file.
 
 ## Notes
 
