@@ -25,9 +25,11 @@ class RouteVisualization:
         self,
         node_coordinates: dict[str, Coordinate],
         metadata: dict[str, Any] | None = None,
+        tiles: str | None = None,
     ):
         self.node_coordinates = node_coordinates
         self.metadata = metadata or {}
+        self.tiles = tiles
         self.routes: list[RouteLayer] = []
 
     def add_route(
@@ -105,10 +107,14 @@ class RouteVisualization:
         if all_lats and all_lons:
             center_lat = sum(all_lats) / len(all_lats)
             center_lon = sum(all_lons) / len(all_lons)
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=15,
+                tiles=self.tiles,
+            )
             m.fit_bounds([[min(all_lats), min(all_lons)], [max(all_lats), max(all_lons)]])
         else:
-            m = folium.Map(location=[0, 0], zoom_start=2)
+            m = folium.Map(location=[0, 0], zoom_start=2, tiles=self.tiles)
 
         # Add network-level metadata to the map as a fixed HTML overlay
         if self.metadata:

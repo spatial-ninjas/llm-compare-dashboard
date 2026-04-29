@@ -1,3 +1,6 @@
+from dashboard.route_visualization import Coordinate, RouteVisualization
+
+
 node_coordinates: dict[str, Coordinate] = {
     # Laivurinkatu vertical segment
     "1379551695": (24.94153, 60.15873),
@@ -156,4 +159,4 @@ viz.add_route(
     metadata=route_metadata_4,
 )
 
-viz.render()
+viz.render(save_path="route_visualization_test.html")
