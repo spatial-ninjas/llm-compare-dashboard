@@ -427,7 +427,11 @@ def save_route_evaluation(
 
 
 def load_route_evaluations(limit: int = 100) -> pd.DataFrame:
-    """Load recent route evaluation rows for dashboard display."""
+    """Load recent route evaluation rows for dashboard display.
+
+    The main history table uses compact metric columns, while selected-row
+    detail views can use the saved path/raw JSON fields for segment inspection.
+    """
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -441,16 +445,31 @@ def load_route_evaluations(limit: int = 100) -> pd.DataFrame:
                 rt.origin,
                 rt.destination,
                 rt.ssal_hash,
+
                 re.valid_json,
                 re.valid_path,
                 re.exact_path_match,
+
+                re.candidate_path_json,
+                COALESCE(
+                    re.ground_truth_path_json,
+                    rt.ground_truth_path_json
+                ) AS ground_truth_path_json,
+
+                re.candidate_declared_length,
                 re.candidate_computed_length,
                 re.ground_truth_length,
+
+                re.absolute_length_error,
                 re.relative_length_error,
+                re.declared_length_absolute_error,
                 re.declared_length_relative_error,
+
                 re.node_overlap,
                 re.edge_overlap,
-                re.error_text
+
+                re.error_text,
+                re.raw_evaluation_json
             FROM route_evaluations re
             JOIN route_tasks rt ON rt.id = re.task_id
             ORDER BY re.id DESC

@@ -115,4 +115,7 @@ def render_route_history_view() -> None:
 
     selected_row = display_df.iloc[int(selected_index)].to_dict()
 
+    with st.expander("Available saved evaluation fields"):
+        st.write(list(selected_row.keys()))
+
     st.json(selected_row)
