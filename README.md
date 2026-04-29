@@ -1,5 +1,7 @@
 # llm-compare-dashboard
 
+Current release: **v0.2.0**
+
 This project is a local Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
 
 The app runs on your own computer and opens in your browser. It is not deployed as a public website or backend service. Start it locally with:
@@ -37,15 +39,19 @@ The route-finding mode requires the sibling `research` repository at `v0.1.0` or
 
 ## Why this exists
 
-The dashboard has two modes:
+The dashboard has three modes:
 
 ```text
 General prompt comparison
   Send the same free-form prompt to OpenAI and Gemini.
 
-Route-finding evaluation
+Route finding
   Generate an SSAL route prompt, run both providers, evaluate the returned routes,
   and persist route-specific metrics.
+
+Route evaluation history
+  Review saved route evaluations, filter previous runs, inspect rows,
+  and export route-history data.
 ```
 
 The goal is to make model comparison reproducible. Instead of manually copying prompts between providers or writing one-off scripts, the dashboard lets you:
@@ -53,9 +59,10 @@ The goal is to make model comparison reproducible. Instead of manually copying p
 - run the same prompt against OpenAI and Gemini
 - inspect responses, metadata, token usage, latency, and retry attempts
 - save provider calls to a local SQLite history
-- export saved history as JSON
+- export saved general prompt history as JSON
 - load an SSAL route network from the sibling `research` repo
 - compare model-generated routes against Dijkstra ground truth
+- review saved route evaluations in a dedicated history view
 - export route-history rows for offline research evaluation
 
 ## Relationship to the research repo
@@ -119,9 +126,9 @@ one OpenAI row
 one Gemini row
 ```
 
-### Route-finding evaluation
+### Route finding
 
-The route mode loads the configured SSAL-native routing network, lets you choose an origin and destination, generates a route-finding prompt, calls both providers, evaluates the returned routes, and saves the results.
+The route-finding mode loads the configured SSAL-native routing network, lets you choose an origin and destination, generates a route-finding prompt, calls both providers, evaluates the returned routes, and saves the results.
 
 It includes:
 
@@ -141,7 +148,6 @@ It includes:
 - metric-by-metric OpenAI/Gemini summary table
 - detailed provider/evaluation cards
 - current route-test JSON export
-- saved route-history JSON export
 
 A route result is shown as satisfactory only when:
 
@@ -153,6 +159,20 @@ exact_path_match == true
 ```
 
 Other evaluated results are shown as needing review rather than as green success.
+
+### Route evaluation history
+
+The route evaluation history mode is for reviewing saved route-specific evaluation rows without running new provider calls.
+
+It includes:
+
+- saved route-evaluation table loaded from local SQLite history
+- provider filter
+- satisfactory / needs-review status filter
+- selected-row inspection with raw saved fields
+- saved route-history JSON export for offline research evaluation
+
+This keeps the API-call workflow separate from result review. The history view is display-only: it does not include destructive actions such as clearing saved evaluations.
 
 ## Setup
 
@@ -206,6 +226,7 @@ python -c "from research.evaluation import evaluate_route_response; print('evalu
 python -c "from research.network_loader import load_network_bundle_from_gpkg; print('network loader ok')"
 python -c "from dashboard.views.general import render_general_view; print('general view ok')"
 python -c "from dashboard.views.route_finding import render_route_finding_view; print('route view ok')"
+python -c "from dashboard.views.route_history import render_route_history_view; print('route history view ok')"
 ```
 
 You can also compile the main dashboard modules:
@@ -218,7 +239,8 @@ python -m py_compile \
   dashboard/network.py \
   dashboard/route_prompts.py \
   dashboard/views/general.py \
-  dashboard/views/route_finding.py
+  dashboard/views/route_finding.py \
+  dashboard/views/route_history.py
 ```
 
 ### 5. Create `.env`
@@ -422,11 +444,14 @@ General mode supports:
 - exporting the latest comparison as JSON
 - exporting saved generic provider history as JSON
 
-### Route mode
+### Route modes
 
-Route mode supports:
+Route finding supports:
 
 - exporting the latest route test as JSON
+
+Route evaluation history supports:
+
 - exporting saved route-history rows as JSON
 
 The saved route-history export is compatible with the research repo’s offline history evaluator. Exported route rows include top-level route metadata:
@@ -460,7 +485,7 @@ response_text
 
 ```text
 llm-compare-dashboard/
-  app.py                         Streamlit entrypoint and mode router
+  app.py                         Streamlit entrypoint, app version, and mode router
   requirements.txt               Python dependencies, including editable research dependency
   .env.example                   Environment variable template
   history.db                     Local SQLite DB, created automatically and ignored by Git
@@ -472,7 +497,8 @@ llm-compare-dashboard/
     route_prompts.py             Route prompt template and builder
     views/
       general.py                 General prompt-comparison view
-      route_finding.py           Route-finding evaluation view
+      route_finding.py           Route-finding view for new route tests
+      route_history.py           Saved route-evaluation history view
 
   docs/
     screenshot-main.png          README screenshot
@@ -483,9 +509,9 @@ llm-compare-dashboard/
 - The OpenAI cost display is only a rough estimate based on the hard-coded model pricing table in the app.
 - Gemini can return transient overload errors such as `503 UNAVAILABLE`; the API client retries transient failures automatically with exponential backoff.
 - Gemini may consume tokens as `thoughts_tokens`, which can explain short visible outputs when `max_output_tokens` is small.
-- Route mode runs OpenAI and Gemini calls in parallel because those calls are network-bound.
+- Route-finding mode runs OpenAI and Gemini calls in parallel because those calls are network-bound.
 - The dashboard shows per-call usage metadata. It does not show a provider-wide “tokens left” counter.
-- Saved-history export is available, but destructive “clear history” controls are intentionally not shown in the current UI.
+- Saved-history export is available in the general and route-evaluation history views, but destructive “clear history” controls are intentionally not shown in the current UI.
 - Keep `.env` out of Git.
 - Keep `history.db` out of Git.
 - Keep `.cache/` out of Git if you later enable remote network caching.
