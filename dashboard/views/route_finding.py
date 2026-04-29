@@ -13,7 +13,6 @@ from research.graph import dijkstra_shortest_path
 
 from dashboard.api_clients import call_gemini, call_openai
 from dashboard.db import (
-    export_route_history_json,
     save_route_evaluation,
     save_route_task,
     save_run,
@@ -422,16 +421,6 @@ def render_route_finding_view() -> None:
         st.caption("Route network")
         st.write(f"SSAL hash: `{bundle.ssal_hash[:12]}`")
         st.write(f"Nodes: `{len(nodes)}`")
-
-        st.divider()
-        st.caption("Route history export")
-        st.download_button(
-            "Download route history JSON",
-            data=export_route_history_json(),
-            file_name="route_history_export.json",
-            mime="application/json",
-            width="stretch",
-        )
 
     st.subheader("Route task")
 
