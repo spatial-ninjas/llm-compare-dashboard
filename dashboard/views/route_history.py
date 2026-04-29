@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pandas as pd
@@ -24,6 +25,68 @@ def _status_label(row: pd.Series) -> str:
     ):
         return "✅ Satisfactory"
     return "⚠️ Needs review"
+
+
+def _parse_path(value: Any) -> list[str]:
+    """Parse a saved JSON path value into node IDs."""
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return [str(node) for node in value]
+
+    if isinstance(value, tuple):
+        return [str(node) for node in value]
+
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+
+        if isinstance(parsed, list):
+            return [str(node) for node in parsed]
+
+    return []
+
+
+def _path_to_segments(path: list[str]) -> list[tuple[str, str]]:
+    """Convert a node path into ordered node-to-node route segments."""
+    return list(zip(path, path[1:]))
+
+
+def _build_segment_rows(
+    *,
+    candidate_path: list[str],
+    ground_truth_path: list[str],
+) -> list[dict[str, Any]]:
+    """Build graph-agnostic segment inspection rows."""
+    reference_segments = set(_path_to_segments(ground_truth_path))
+
+    rows: list[dict[str, Any]] = []
+
+    for index, (from_node, to_node) in enumerate(_path_to_segments(candidate_path)):
+        in_reference_route = (from_node, to_node) in reference_segments
+
+        rows.append(
+            {
+                "index": index,
+                "from_node": from_node,
+                "to_node": to_node,
+                "in_reference_route": in_reference_route,
+                "segment_status": "ok" if in_reference_route else "extra_segment",
+                "notes": (
+                    "Matches reference route"
+                    if in_reference_route
+                    else "Candidate segment is not in the reference route"
+                ),
+            }
+        )
+
+    return rows
 
 
 def render_route_history_view() -> None:
@@ -118,4 +181,43 @@ def render_route_history_view() -> None:
     with st.expander("Available saved evaluation fields"):
         st.write(list(selected_row.keys()))
 
-    st.json(selected_row)
+    with st.expander("Raw selected evaluation row"):
+        st.json(selected_row)
+
+    st.subheader("Route segment inspection")
+
+    candidate_path = _parse_path(selected_row.get("candidate_path_json"))
+    ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
+
+    if len(candidate_path) < 2:
+        st.info("No inspectable candidate route segments were saved for this evaluation.")
+        return
+
+    if len(ground_truth_path) < 2:
+        st.info("No inspectable ground-truth route segments were saved for this evaluation.")
+        return
+
+    segment_rows = _build_segment_rows(
+        candidate_path=candidate_path,
+        ground_truth_path=ground_truth_path,
+    )
+
+    segment_df = pd.DataFrame(segment_rows)
+
+    review_count = int((segment_df["segment_status"] != "ok").sum())
+
+    if review_count == 0:
+        st.success("All candidate segments match the reference route.")
+    else:
+        st.warning(f"{review_count} candidate segment(s) are not in the reference route.")
+
+    display_segment_df = segment_df.copy()
+    display_segment_df["in_reference_route"] = display_segment_df[
+        "in_reference_route"
+    ].apply(_format_bool)
+
+    st.dataframe(
+        display_segment_df,
+        width="stretch",
+        hide_index=True,
+    )
