@@ -2,6 +2,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 
+APP_VERSION = "v0.2.0"
+
 load_dotenv()
 
 from dashboard.db import init_db  # noqa: E402
@@ -18,6 +20,8 @@ st.set_page_config(
 init_db()
 
 st.title("OpenAI vs Gemini Comparator")
+
+st.sidebar.caption(f"Version: {APP_VERSION}")
 
 mode = st.sidebar.radio(
     "Mode",
