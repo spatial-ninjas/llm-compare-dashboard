@@ -7,6 +7,7 @@ load_dotenv()
 from dashboard.db import init_db  # noqa: E402
 from dashboard.views.general import render_general_view  # noqa: E402
 from dashboard.views.route_finding import render_route_finding_view  # noqa: E402
+from dashboard.views.route_history import render_route_history_view  # noqa: E402
 
 
 st.set_page_config(
@@ -22,7 +23,8 @@ mode = st.sidebar.radio(
     "Mode",
     [
         "General prompt comparison",
-        "Route-finding evaluation",
+        "Route finding",
+        "Route evaluation history",
     ],
 )
 
@@ -31,6 +33,13 @@ if mode == "General prompt comparison":
         "Send the same prompt to both APIs, compare outputs, and persist history in SQLite."
     )
     render_general_view()
+
+elif mode == "Route evaluation history":
+    st.caption(
+        "Review saved route evaluations, inspect previous runs, and export route-history data."
+    )
+    render_route_history_view()
+
 else:
     st.caption(
         "Generate route-finding prompts and evaluate model routes against SSAL-native ground truth."
