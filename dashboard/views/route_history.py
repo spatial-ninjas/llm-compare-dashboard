@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 from typing import Any
 
@@ -100,6 +101,18 @@ def _missing_edge_set(candidate_validation: dict[str, Any]) -> set[tuple[str, st
     return missing_edges
 
 
+def _selection_label(row: pd.Series) -> str:
+    """Return a compact label for selecting a saved route evaluation."""
+    row_id = row.get("id")
+    created_at = str(row.get("created_at") or "")
+    time_part = created_at.split(" ")[1] if " " in created_at else created_at
+    provider = row.get("provider") or "?"
+    origin = row.get("origin") or "?"
+    destination = row.get("destination") or "?"
+
+    return f"#{row_id} · {provider} · {time_part} · {origin} → {destination}"
+
+
 def _build_segment_rows_from_evaluation(
     *,
     candidate_path: list[str],
@@ -114,7 +127,10 @@ def _build_segment_rows_from_evaluation(
     for dashboard inspection.
     """
     reference_segments = set(_path_to_segments(ground_truth_path))
-    unknown_nodes = {str(node) for node in candidate_validation.get("unknown_nodes") or []}
+    unknown_nodes = {
+        str(node)
+        for node in candidate_validation.get("unknown_nodes") or []
+    }
     missing_edges = _missing_edge_set(candidate_validation)
 
     rows: list[dict[str, Any]] = []
@@ -151,6 +167,185 @@ def _build_segment_rows_from_evaluation(
         )
 
     return rows
+
+
+def _format_metric_value(value: Any, digits: int = 3) -> str:
+    """Format optional numeric metric values for compact display."""
+    if value is None or pd.isna(value):
+        return "—"
+
+    if isinstance(value, (int, float)):
+        return f"{value:.{digits}f}"
+
+    return str(value)
+
+
+def _format_error_text(value: Any) -> str:
+    """Format optional error/reason text."""
+    if value is None or pd.isna(value):
+        return "—"
+
+    text = str(value)
+    return text if text and text.lower() != "nan" else "—"
+
+
+def _metric_cell(label: str, value: Any) -> str:
+    """Return compact HTML for one selected-evaluation metric cell."""
+    escaped_label = html.escape(str(label))
+    escaped_value = html.escape(str(value))
+
+    return f"""
+    <div style="padding: 0.35rem 0 0.2rem 0;">
+        <div style="
+            font-size: 0.85rem;
+            color: #6b7280;
+            margin-bottom: 0.15rem;
+        ">
+            {escaped_label}
+        </div>
+        <div style="
+            font-size: 1.25rem;
+            font-weight: 600;
+            line-height: 1.2;
+        ">
+            {escaped_value}
+        </div>
+    </div>
+    """
+
+
+def _render_history_overview_table(display_df: pd.DataFrame) -> None:
+    """Render a compact overview table for saved route evaluations."""
+    st.subheader("Saved evaluations")
+
+    overview_df = display_df.copy()
+
+    overview_df["route"] = (
+        overview_df["origin"].astype(str)
+        + " → "
+        + overview_df["destination"].astype(str)
+    )
+
+    overview_df["len_err"] = overview_df["relative_length_error"].apply(
+        _format_metric_value
+    )
+    overview_df["node"] = overview_df["node_overlap"].apply(_format_metric_value)
+    overview_df["edge"] = overview_df["edge_overlap"].apply(_format_metric_value)
+    overview_df["reason"] = overview_df["error_text"].apply(_format_error_text)
+
+    overview_columns = {
+        "id": "ID",
+        "created_at": "Time",
+        "provider": "Provider",
+        "model": "Model",
+        "route": "Route",
+        "status": "Status",
+        "len_err": "Len err",
+        "node": "Node",
+        "edge": "Edge",
+        "reason": "Reason",
+    }
+
+    existing_overview_columns = [
+        column for column in overview_columns if column in overview_df.columns
+    ]
+
+    overview_df = overview_df[existing_overview_columns].rename(
+        columns=overview_columns
+    )
+
+    st.dataframe(
+        overview_df,
+        width="stretch",
+        hide_index=True,
+        height=320,
+    )
+
+
+def _render_selected_evaluation_summary(selected_row: dict[str, Any]) -> None:
+    """Render a compact summary card for the selected saved evaluation."""
+    provider = selected_row.get("provider", "—")
+    model = selected_row.get("model", "—")
+    created_at = selected_row.get("created_at", "—")
+    origin = selected_row.get("origin", "—")
+    destination = selected_row.get("destination", "—")
+    evaluation_id = selected_row.get("id", "—")
+
+    candidate_path = _parse_path(selected_row.get("candidate_path_json"))
+    ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
+
+    candidate_edges = max(len(candidate_path) - 1, 0)
+    ground_truth_edges = max(len(ground_truth_path) - 1, 0)
+
+    candidate_length = selected_row.get("candidate_computed_length")
+    ground_truth_length = selected_row.get("ground_truth_length")
+    relative_length_error = selected_row.get("relative_length_error")
+    node_overlap = selected_row.get("node_overlap")
+    edge_overlap = selected_row.get("edge_overlap")
+    error_text = _format_error_text(selected_row.get("error_text"))
+
+    with st.container(border=True):
+        st.markdown(f"**#{evaluation_id} · {provider}/{model}**")
+        st.caption(str(created_at))
+        st.markdown(f"Route: `{origin}` → `{destination}`")
+
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+        with metric_col1:
+            st.markdown(
+                _metric_cell(
+                    "Candidate length",
+                    _format_metric_value(candidate_length, digits=1),
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with metric_col2:
+            st.markdown(
+                _metric_cell(
+                    "Ground truth",
+                    _format_metric_value(ground_truth_length, digits=1),
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with metric_col3:
+            st.markdown(
+                _metric_cell("Candidate edges", str(candidate_edges)),
+                unsafe_allow_html=True,
+            )
+
+        with metric_col4:
+            st.markdown(
+                _metric_cell("Reference edges", str(ground_truth_edges)),
+                unsafe_allow_html=True,
+            )
+
+        metric_col5, metric_col6, metric_col7 = st.columns(3)
+
+        with metric_col5:
+            st.markdown(
+                _metric_cell(
+                    "Relative length error",
+                    _format_metric_value(relative_length_error),
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with metric_col6:
+            st.markdown(
+                _metric_cell("Node overlap", _format_metric_value(node_overlap)),
+                unsafe_allow_html=True,
+            )
+
+        with metric_col7:
+            st.markdown(
+                _metric_cell("Edge overlap", _format_metric_value(edge_overlap)),
+                unsafe_allow_html=True,
+            )
+
+        if error_text != "—":
+            st.caption(f"Reason/error: {error_text}")
 
 
 def _render_segment_inspection(selected_row: dict[str, Any]) -> None:
@@ -277,11 +472,7 @@ def render_route_history_view() -> None:
 
     existing_columns = [column for column in columns if column in table_df.columns]
 
-    st.dataframe(
-        table_df[existing_columns],
-        width="stretch",
-        hide_index=True,
-    )
+    _render_history_overview_table(display_df)
 
     st.download_button(
         "Download route history JSON",
@@ -291,22 +482,30 @@ def render_route_history_view() -> None:
         width="stretch",
     )
 
+    with st.expander("Detailed history table"):
+        st.dataframe(
+            table_df[existing_columns],
+            width="stretch",
+            hide_index=True,
+        )
+
     st.subheader("Inspect selected evaluation")
 
-    selected_index = st.number_input(
-        "Row number",
-        min_value=0,
-        max_value=len(display_df) - 1,
-        value=0,
-        step=1,
+    selection_df = display_df.reset_index(drop=True).copy()
+    option_ids = selection_df["id"].tolist()
+
+    selection_labels = {
+        row["id"]: _selection_label(row)
+        for _, row in selection_df.iterrows()
+    }
+
+    selected_id = st.selectbox(
+        "Saved evaluation",
+        options=option_ids,
+        format_func=lambda row_id: selection_labels.get(row_id, str(row_id)),
     )
 
-    selected_row = display_df.iloc[int(selected_index)].to_dict()
+    selected_row = selection_df.loc[selection_df["id"] == selected_id].iloc[0].to_dict()
 
-    with st.expander("Available saved evaluation fields"):
-        st.write(list(selected_row.keys()))
-
-    with st.expander("Raw selected evaluation row"):
-        st.json(selected_row)
-
+    _render_selected_evaluation_summary(selected_row)
     _render_segment_inspection(selected_row)
