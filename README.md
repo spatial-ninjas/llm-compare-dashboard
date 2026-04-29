@@ -1,6 +1,6 @@
 # llm-compare-dashboard
 
-Current release: **v0.2.0**
+Current release: **v0.2.1**
 
 This project is a local Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
 
@@ -18,9 +18,11 @@ streamlit run app.py
 
 ## Version note
 
-This repository is currently at `v0.1.0`.
+This repository is currently at `v0.2.1`.
 
-This is the first usable dashboard milestone with:
+This release builds on the `v0.2.0` route-evaluation history view by adding route segment inspection for saved route evaluations.
+
+Current dashboard capabilities include:
 
 - general OpenAI/Gemini prompt comparison
 - persistent local SQLite history
@@ -30,6 +32,10 @@ This is the first usable dashboard milestone with:
 - route prompt generation
 - parallel provider calls
 - route evaluation display and JSON export
+- dedicated route-evaluation history view
+- compact saved-evaluation overview table
+- selected-evaluation summary card
+- route segment inspection using saved evaluator output
 
 The route-finding mode requires the sibling `research` repository at `v0.1.0` or a compatible version. In the expected local layout, the dashboard installs it through:
 
@@ -63,6 +69,7 @@ The goal is to make model comparison reproducible. Instead of manually copying p
 - load an SSAL route network from the sibling `research` repo
 - compare model-generated routes against Dijkstra ground truth
 - review saved route evaluations in a dedicated history view
+- inspect saved routes as ordered node-to-node segments
 - export route-history rows for offline research evaluation
 
 ## Relationship to the research repo
@@ -166,13 +173,60 @@ The route evaluation history mode is for reviewing saved route-specific evaluati
 
 It includes:
 
-- saved route-evaluation table loaded from local SQLite history
+- compact saved-evaluation overview table loaded from local SQLite history
 - provider filter
 - satisfactory / needs-review status filter
-- selected-row inspection with raw saved fields
+- selected-evaluation summary card
+- route-level metrics such as candidate length, ground-truth length, relative length error, node overlap, and edge overlap
+- candidate/reference edge counts
+- route segment inspection table
+- raw evaluator output expander for debugging
+- detailed history table in a collapsed expander
 - saved route-history JSON export for offline research evaluation
 
+The segment inspection table breaks a saved candidate route into ordered node-to-node segments and labels each segment using evaluator output saved in `raw_evaluation_json.candidate_validation`.
+
+Current segment statuses include:
+
+```text
+ok
+extra_segment
+unknown_from_node
+unknown_to_node
+missing_edge
+```
+
+The dashboard does not re-validate graph edges for segment inspection. It formats the saved evaluator output produced by `research.evaluation`, so route parsing, unknown-node detection, missing-edge detection, and graph validation remain in the shared research evaluator.
+
 This keeps the API-call workflow separate from result review. The history view is display-only: it does not include destructive actions such as clearing saved evaluations.
+
+## Release notes
+
+### v0.2.1
+
+Added route segment inspection for saved route evaluations.
+
+Highlights:
+
+- compact saved-evaluation overview table in the route history view
+- selected-evaluation summary card with route-level metrics
+- segment inspection table for saved candidate routes
+- segment labels for matching, extra, unknown-node, and missing-edge cases
+- raw evaluator output expander for debugging
+- route segment inspection uses saved `research.evaluation` output instead of revalidating graph edges in the dashboard
+
+### v0.2.0
+
+Added the dedicated route-evaluation history view.
+
+Highlights:
+
+- separate `Route evaluation history` mode
+- saved route-evaluation table
+- provider and status filters
+- selected-row inspection
+- route-history JSON export from the history view
+- route-finding mode kept focused on running new route tests
 
 ## Setup
 
@@ -433,6 +487,8 @@ Stores one evaluated provider response for one route task:
 - error text
 - raw evaluator JSON
 
+The route evaluation history view uses the saved candidate path, ground-truth path, and raw evaluator JSON to render segment inspection without duplicating route validation logic in the dashboard.
+
 The app auto-migrates older `history.db` files by adding missing generic-history columns and creating route-specific tables when needed.
 
 ## Export behavior
@@ -512,6 +568,7 @@ llm-compare-dashboard/
 - Route-finding mode runs OpenAI and Gemini calls in parallel because those calls are network-bound.
 - The dashboard shows per-call usage metadata. It does not show a provider-wide “tokens left” counter.
 - Saved-history export is available in the general and route-evaluation history views, but destructive “clear history” controls are intentionally not shown in the current UI.
+- Route segment inspection is currently available from the route-evaluation history view, not directly under the latest route-finding result cards.
 - Keep `.env` out of Git.
 - Keep `history.db` out of Git.
 - Keep `.cache/` out of Git if you later enable remote network caching.
