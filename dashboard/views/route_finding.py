@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import base64
 import json
+from pathlib import Path
+import tempfile
 from typing import Any
 
 import pandas as pd
@@ -21,6 +24,10 @@ from dashboard.network import load_route_network_bundle
 from dashboard.route_prompts import (
     DEFAULT_ROUTE_PROMPT_TEMPLATE,
     build_route_prompt,
+)
+from dashboard.route_visualization import (
+    RouteVisualization,
+    node_coordinates_from_network_bundle,
 )
 
 
@@ -205,6 +212,58 @@ def render_save_summary(
             }
         )
 
+
+def render_route_map_preview(
+    *,
+    bundle: Any,
+    origin: str,
+    destination: str,
+    ground_truth_path: list[str],
+) -> None:
+    """Render a map preview for the selected route task."""
+    st.subheader("Route map preview")
+
+    node_coordinates = node_coordinates_from_network_bundle(bundle)
+
+    if not node_coordinates:
+        st.info("No node coordinates are available for map preview.")
+        return
+
+    viz = RouteVisualization(
+        node_coordinates=node_coordinates,
+        metadata={
+            "ssal_hash": bundle.ssal_hash[:12],
+            "origin": origin,
+            "destination": destination,
+        },
+    )
+
+    viz.add_route(
+        route=ground_truth_path,
+        metadata={
+            "label": "Dijkstra reference route",
+            "origin": origin,
+            "destination": destination,
+            "source": "research.graph.dijkstra_shortest_path",
+        },
+        color="green",
+    )
+
+    output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = f"route_preview_{origin}_{destination}_{bundle.ssal_hash[:12]}.html"
+    output_path = output_dir / safe_name
+
+    viz.render(save_path=str(output_path))
+
+    html = output_path.read_text(encoding="utf-8")
+    encoded_html = base64.b64encode(html.encode("utf-8")).decode("ascii")
+
+    st.iframe(
+        f"data:text/html;base64,{encoded_html}",
+        height=520,
+    )
 
 
 def render_route_eval_summary_table(
@@ -461,6 +520,13 @@ def render_route_finding_view() -> None:
     ground_truth_length = _ground_truth_length(ground_truth)
 
     st.write(f"Ground-truth length: `{_format_metric(ground_truth_length, digits=1)}`")
+
+    render_route_map_preview(
+        bundle=bundle,
+        origin=origin,
+        destination=destination,
+        ground_truth_path=ground_truth["path"],
+    )
 
     with st.expander("Ground-truth path"):
         st.code(
