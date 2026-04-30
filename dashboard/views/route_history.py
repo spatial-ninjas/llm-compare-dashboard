@@ -24,6 +24,25 @@ INVALID_SEGMENT_STATUSES = {
     "missing_edge",
 }
 
+SEGMENT_HIGHLIGHT_STYLES = {
+    "missing_edge": {
+        "color": "red",
+        "dash_array": None,
+    },
+    "unknown_from_node": {
+        "color": "red",
+        "dash_array": "6",
+    },
+    "unknown_to_node": {
+        "color": "red",
+        "dash_array": "6",
+    },
+    "extra_segment": {
+        "color": "orange",
+        "dash_array": "8",
+    },
+}
+
 
 def _format_bool(value: Any) -> str:
     if value == 1 or value is True:
@@ -175,6 +194,41 @@ def _build_segment_rows_from_evaluation(
         )
 
     return rows
+
+
+def _add_segment_highlights_to_map(
+    *,
+    viz: RouteVisualization,
+    segment_rows: list[dict[str, Any]],
+) -> int:
+    """Add invalid/diverging segment overlays to the route map.
+
+    Returns the number of highlights added.
+    """
+    highlight_count = 0
+
+    for row in segment_rows:
+        status = row.get("segment_status")
+
+        if status not in SEGMENT_HIGHLIGHT_STYLES:
+            continue
+
+        style = SEGMENT_HIGHLIGHT_STYLES[status]
+
+        viz.add_segment_highlight(
+            from_node=str(row.get("from_node")),
+            to_node=str(row.get("to_node")),
+            status=str(status),
+            color=style["color"],
+            dash_array=style["dash_array"],
+            metadata={
+                "notes": row.get("notes", ""),
+                "in_reference_route": row.get("in_reference_route"),
+            },
+        )
+        highlight_count += 1
+
+    return highlight_count
 
 
 def _format_metric_value(value: Any, digits: int = 3) -> str:
@@ -440,6 +494,8 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
     """Render candidate/reference route map for one selected saved evaluation."""
     candidate_path = _parse_path(selected_row.get("candidate_path_json"))
     ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
+    raw_evaluation = _parse_json_object(selected_row.get("raw_evaluation_json"))
+    candidate_validation = raw_evaluation.get("candidate_validation") or {}
 
     if len(candidate_path) < 2:
         st.info("No inspectable candidate route was saved for this evaluation.")
@@ -448,6 +504,12 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
     if len(ground_truth_path) < 2:
         st.info("No inspectable ground-truth route was saved for this evaluation.")
         return
+
+    segment_rows = _build_segment_rows_from_evaluation(
+        candidate_path=candidate_path,
+        ground_truth_path=ground_truth_path,
+        candidate_validation=candidate_validation,
+    )
 
     try:
         bundle = load_route_network_bundle()
@@ -494,6 +556,24 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
         color=provider_color,
         ground_truth_color="green",
     )
+
+    highlight_count = _add_segment_highlights_to_map(
+        viz=viz,
+        segment_rows=segment_rows,
+    )
+
+    if highlight_count:
+        st.warning(
+            f"{highlight_count} invalid or diverging candidate segment(s) "
+            "are highlighted on the map."
+        )
+        st.caption(
+            "Map highlighting: red = invalid segment, "
+            "red dashed = unknown-node segment, "
+            "orange dashed = candidate segment outside the reference route."
+        )
+    else:
+        st.success("No invalid or diverging candidate segments were highlighted on the map.")
 
     output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
     output_dir.mkdir(parents=True, exist_ok=True)

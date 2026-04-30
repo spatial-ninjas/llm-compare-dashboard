@@ -256,6 +256,138 @@ class RouteVisualization:
 
         return all_lats, all_lons
 
+    def _add_ground_truth_layer(
+        self,
+        *,
+        route_map: folium.Map,
+        layer: RouteLayer,
+        label: str,
+    ) -> None:
+        """Add the ground-truth route as a separate toggleable layer."""
+        if not layer.ground_truth_coordinates:
+            return
+
+        ground_truth_group = folium.FeatureGroup(name=f"{label} · ground truth")
+        ground_truth_lat_lons = [
+            (lat, lon) for lon, lat in layer.ground_truth_coordinates
+        ]
+
+        folium.PolyLine(
+            locations=ground_truth_lat_lons,
+            color=layer.ground_truth_color,
+            weight=6,
+            opacity=0.6,
+            dash_array="10",
+            tooltip=folium.Tooltip(f"<b>Ground Truth:</b> {label}"),
+        ).add_to(ground_truth_group)
+
+        ground_truth_group.add_to(route_map)
+
+    def _add_candidate_layer(
+        self,
+        *,
+        route_map: folium.Map,
+        layer: RouteLayer,
+        label: str,
+        tooltip_html: str,
+    ) -> None:
+        """Add the candidate route as a separate toggleable layer."""
+        candidate_group = folium.FeatureGroup(name=f"{label} · candidate")
+        route_lat_lons = [(lat, lon) for lon, lat in layer.route_coordinates]
+
+        if route_lat_lons:
+            folium.PolyLine(
+                locations=route_lat_lons,
+                color=layer.color,
+                weight=4,
+                opacity=0.8,
+                tooltip=folium.Tooltip(tooltip_html),
+            ).add_to(candidate_group)
+
+            folium.CircleMarker(
+                location=route_lat_lons[0],
+                radius=5,
+                color="green",
+                fill=True,
+                fill_color="green",
+                tooltip=f"Start: {layer.route[0]}",
+            ).add_to(candidate_group)
+
+            folium.CircleMarker(
+                location=route_lat_lons[-1],
+                radius=5,
+                color="red",
+                fill=True,
+                fill_color="red",
+                tooltip=f"End: {layer.route[-1]}",
+            ).add_to(candidate_group)
+
+        if layer.missing_route_nodes or layer.missing_ground_truth_nodes:
+            missing_metadata = {
+                "missing route nodes": ", ".join(layer.missing_route_nodes) or "—",
+                "missing ground truth nodes": (
+                    ", ".join(layer.missing_ground_truth_nodes) or "—"
+                ),
+            }
+            missing_html = self._format_metadata_html(
+                missing_metadata,
+                f"Missing coordinates: {label}",
+            )
+            # Add a small warning marker at the first visible route point,
+            # or map center when no route point could be resolved.
+            marker_location = (
+                route_lat_lons[0]
+                if route_lat_lons
+                else route_map.location
+            )
+            folium.Marker(
+                location=marker_location,
+                tooltip=folium.Tooltip(missing_html),
+                icon=folium.Icon(color="orange", icon="warning-sign"),
+            ).add_to(candidate_group)
+
+        candidate_group.add_to(route_map)
+
+    def _add_segment_highlight_layer(self, route_map: folium.Map) -> None:
+        """Add segment highlights as a separate toggleable layer."""
+        if not self.segment_highlights:
+            return
+
+        highlight_group = folium.FeatureGroup(name="Segment highlights")
+
+        for highlight in self.segment_highlights:
+            lat_lons = [(lat, lon) for lon, lat in highlight.coordinates]
+
+            tooltip_html = self._format_metadata_html(
+                {
+                    "status": highlight.status,
+                    **highlight.metadata,
+                },
+                f"{highlight.from_node} → {highlight.to_node}",
+            )
+
+            if len(lat_lons) >= 2:
+                folium.PolyLine(
+                    locations=lat_lons,
+                    color=highlight.color,
+                    weight=highlight.weight,
+                    opacity=highlight.opacity,
+                    dash_array=highlight.dash_array,
+                    tooltip=folium.Tooltip(tooltip_html),
+                ).add_to(highlight_group)
+
+            elif len(lat_lons) == 1:
+                folium.CircleMarker(
+                    location=lat_lons[0],
+                    radius=6,
+                    color=highlight.color,
+                    fill=True,
+                    fill_color=highlight.color,
+                    tooltip=folium.Tooltip(tooltip_html),
+                ).add_to(highlight_group)
+
+        highlight_group.add_to(route_map)
+
     def render(self, save_path: str | None = None) -> folium.Map:
         """Render the map with added route layers and segment highlights."""
         all_lats, all_lons = self._map_bounds_points()
@@ -297,112 +429,22 @@ class RouteVisualization:
 
         for index, layer in enumerate(self.routes, start=1):
             label = layer.metadata.get("label", f"Route {index}")
-            feature_group = folium.FeatureGroup(name=str(label))
-            tooltip_html = self._format_metadata_html(layer.metadata, str(label))
+            label = str(label)
+            tooltip_html = self._format_metadata_html(layer.metadata, label)
 
-            if layer.ground_truth_coordinates:
-                ground_truth_lat_lons = [
-                    (lat, lon) for lon, lat in layer.ground_truth_coordinates
-                ]
-                folium.PolyLine(
-                    locations=ground_truth_lat_lons,
-                    color=layer.ground_truth_color,
-                    weight=6,
-                    opacity=0.6,
-                    dash_array="10",
-                    tooltip=folium.Tooltip(f"<b>Ground Truth:</b> {label}"),
-                ).add_to(feature_group)
+            self._add_ground_truth_layer(
+                route_map=route_map,
+                layer=layer,
+                label=label,
+            )
+            self._add_candidate_layer(
+                route_map=route_map,
+                layer=layer,
+                label=label,
+                tooltip_html=tooltip_html,
+            )
 
-            route_lat_lons = [(lat, lon) for lon, lat in layer.route_coordinates]
-
-            if route_lat_lons:
-                folium.PolyLine(
-                    locations=route_lat_lons,
-                    color=layer.color,
-                    weight=4,
-                    opacity=0.8,
-                    tooltip=folium.Tooltip(tooltip_html),
-                ).add_to(feature_group)
-
-                folium.CircleMarker(
-                    location=route_lat_lons[0],
-                    radius=5,
-                    color="green",
-                    fill=True,
-                    fill_color="green",
-                    tooltip=f"Start: {layer.route[0]}",
-                ).add_to(feature_group)
-
-                folium.CircleMarker(
-                    location=route_lat_lons[-1],
-                    radius=5,
-                    color="red",
-                    fill=True,
-                    fill_color="red",
-                    tooltip=f"End: {layer.route[-1]}",
-                ).add_to(feature_group)
-
-            if layer.missing_route_nodes or layer.missing_ground_truth_nodes:
-                missing_metadata = {
-                    "missing route nodes": ", ".join(layer.missing_route_nodes) or "—",
-                    "missing ground truth nodes": (
-                        ", ".join(layer.missing_ground_truth_nodes) or "—"
-                    ),
-                }
-                missing_html = self._format_metadata_html(
-                    missing_metadata,
-                    f"Missing coordinates: {label}",
-                )
-                # Add a small warning marker at the first visible route point,
-                # or map center when no route point could be resolved.
-                marker_location = (
-                    route_lat_lons[0]
-                    if route_lat_lons
-                    else route_map.location
-                )
-                folium.Marker(
-                    location=marker_location,
-                    tooltip=folium.Tooltip(missing_html),
-                    icon=folium.Icon(color="orange", icon="warning-sign"),
-                ).add_to(feature_group)
-
-            feature_group.add_to(route_map)
-
-        if self.segment_highlights:
-            highlight_group = folium.FeatureGroup(name="Segment highlights")
-
-            for highlight in self.segment_highlights:
-                lat_lons = [(lat, lon) for lon, lat in highlight.coordinates]
-
-                tooltip_html = self._format_metadata_html(
-                    {
-                        "status": highlight.status,
-                        **highlight.metadata,
-                    },
-                    f"{highlight.from_node} → {highlight.to_node}",
-                )
-
-                if len(lat_lons) >= 2:
-                    folium.PolyLine(
-                        locations=lat_lons,
-                        color=highlight.color,
-                        weight=highlight.weight,
-                        opacity=highlight.opacity,
-                        dash_array=highlight.dash_array,
-                        tooltip=folium.Tooltip(tooltip_html),
-                    ).add_to(highlight_group)
-
-                elif len(lat_lons) == 1:
-                    folium.CircleMarker(
-                        location=lat_lons[0],
-                        radius=6,
-                        color=highlight.color,
-                        fill=True,
-                        fill_color=highlight.color,
-                        tooltip=folium.Tooltip(tooltip_html),
-                    ).add_to(highlight_group)
-
-            highlight_group.add_to(route_map)
+        self._add_segment_highlight_layer(route_map)
 
         folium.LayerControl().add_to(route_map)
 
