@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import base64
 import json
 from pathlib import Path
 import tempfile
@@ -21,6 +20,13 @@ from dashboard.db import (
     save_run,
 )
 from dashboard.network import load_route_network_bundle
+from dashboard.route_map_helpers import (
+    add_segment_highlights_to_map,
+    build_segment_rows_from_evaluation,
+    render_highlight_summary,
+    render_map_html_file,
+    safe_map_token,
+)
 from dashboard.route_prompts import (
     DEFAULT_ROUTE_PROMPT_TEMPLATE,
     build_route_prompt,
@@ -250,18 +256,105 @@ def render_route_map_preview(
     output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = f"route_preview_{origin}_{destination}_{bundle.ssal_hash[:12]}.html"
+    safe_name = (
+        "route_preview_"
+        f"{safe_map_token(origin)}_"
+        f"{safe_map_token(destination)}_"
+        f"{bundle.ssal_hash[:12]}.html"
+    )
     output_path = output_dir / safe_name
 
     viz.render(save_path=str(output_path))
+    render_map_html_file(html_path=output_path, height=520)
 
-    html = output_path.read_text(encoding="utf-8")
-    encoded_html = base64.b64encode(html.encode("utf-8")).decode("ascii")
 
-    st.iframe(
-        f"data:text/html;base64,{encoded_html}",
-        height=520,
+def render_provider_route_map(
+    *,
+    bundle: Any,
+    provider: str,
+    model: str,
+    origin: str,
+    destination: str,
+    ground_truth_path: list[str],
+    evaluation: dict[str, Any],
+) -> None:
+    """Render one provider candidate route against the ground-truth route."""
+    candidate_path = evaluation.get("candidate_path")
+
+    if not isinstance(candidate_path, list) or len(candidate_path) < 2:
+        reason = evaluation.get("reason") or evaluation.get("error_text")
+        if reason:
+            st.info(f"No inspectable {provider} route was extracted: {reason}")
+        else:
+            st.info(f"No inspectable {provider} route was extracted.")
+        return
+
+    candidate_path = [str(node) for node in candidate_path]
+    ground_truth_path = [str(node) for node in ground_truth_path]
+
+    node_coordinates = node_coordinates_from_network_bundle(bundle)
+
+    if not node_coordinates:
+        st.info("No node coordinates are available for route map rendering.")
+        return
+
+    provider_color = "blue"
+    if provider.lower() == "gemini":
+        provider_color = "purple"
+
+    viz = RouteVisualization(
+        node_coordinates=node_coordinates,
+        metadata={
+            "ssal_hash": bundle.ssal_hash[:12],
+            "provider": provider,
+            "model": model,
+            "origin": origin,
+            "destination": destination,
+        },
     )
+
+    viz.add_route(
+        route=candidate_path,
+        ground_truth=ground_truth_path,
+        metadata={
+            "label": f"{provider} / {model}",
+            "origin": origin,
+            "destination": destination,
+            "status": _evaluation_status_label(evaluation),
+        },
+        color=provider_color,
+        ground_truth_color="green",
+    )
+
+    candidate_validation = evaluation.get("candidate_validation") or {}
+    segment_rows = build_segment_rows_from_evaluation(
+        candidate_path=candidate_path,
+        ground_truth_path=ground_truth_path,
+        candidate_validation=candidate_validation,
+    )
+
+    highlight_count = add_segment_highlights_to_map(
+        viz=viz,
+        segment_rows=segment_rows,
+    )
+
+    render_highlight_summary(highlight_count)
+
+    output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = (
+        "route_result_"
+        f"{safe_map_token(provider)}_"
+        f"{safe_map_token(model)}_"
+        f"{safe_map_token(origin)}_"
+        f"{safe_map_token(destination)}_"
+        f"{bundle.ssal_hash[:12]}.html"
+    )
+    output_path = output_dir / safe_name
+
+    viz.render(save_path=str(output_path))
+    render_map_html_file(html_path=output_path, height=520)
 
 
 def render_route_eval_summary_table(
@@ -333,6 +426,7 @@ def render_route_eval_summary_table(
             "Gemini": st.column_config.TextColumn("Gemini", width="medium"),
         },
     )
+
 
 def render_route_eval_card(
     *,
@@ -440,15 +534,15 @@ def render_route_finding_view() -> None:
             "Max response tokens",
             min_value=256,
             max_value=8192,
-            value=2048,
+            value=4096,
             step=256,
         )
 
         gemini_thinking_mode = st.selectbox(
             "Gemini thinking budget",
             options=[
-                "dynamic",
                 "off",
+                "dynamic",
                 "custom",
             ],
             index=0,
@@ -749,6 +843,33 @@ def render_route_finding_view() -> None:
         openai_evaluation=openai_evaluation,
         gemini_evaluation=gemini_evaluation,
     )
+
+    with st.expander("Route maps", expanded=True):
+        map_col1, map_col2 = st.columns(2)
+
+        with map_col1:
+            st.markdown("**OpenAI route map**")
+            render_provider_route_map(
+                bundle=bundle,
+                provider="OpenAI",
+                model=_get_result_model(openai_result, openai_model),
+                origin=origin,
+                destination=destination,
+                ground_truth_path=ground_truth["path"],
+                evaluation=openai_evaluation,
+            )
+
+        with map_col2:
+            st.markdown("**Gemini route map**")
+            render_provider_route_map(
+                bundle=bundle,
+                provider="Gemini",
+                model=_get_result_model(gemini_result, gemini_model),
+                origin=origin,
+                destination=destination,
+                ground_truth_path=ground_truth["path"],
+                evaluation=gemini_evaluation,
+            )
 
     result_col1, result_col2 = st.columns(2)
 

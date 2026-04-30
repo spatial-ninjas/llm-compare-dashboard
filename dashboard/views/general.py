@@ -244,7 +244,7 @@ def render_general_view() -> None:
             "Max response tokens",
             min_value=32,
             max_value=2048,
-            value=300,
+            value=1024,
             step=32,
         )
 
