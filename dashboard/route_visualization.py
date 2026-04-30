@@ -219,7 +219,7 @@ class RouteVisualization:
             rows.append(
                 "<tr>"
                 f"<td style='padding-right: 8px; font-weight: bold;'>{escaped_key}:</td>"
-                f"<td>{escaped_value}</td>"
+                f"<td>{escaped_value[:21]}</td>"
                 "</tr>"
             )
 

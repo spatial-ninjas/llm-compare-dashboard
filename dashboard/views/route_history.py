@@ -16,31 +16,21 @@ from dashboard.route_visualization import (
     RouteVisualization,
     node_coordinates_from_network_bundle,
 )
+from dashboard.route_map_helpers import (
+    add_segment_highlights_to_map,
+    build_segment_rows_from_evaluation,
+    parse_json_object,
+    parse_path,
+    render_highlight_summary,
+    render_map_html_file,
+    safe_map_token,
+)
 
 
 INVALID_SEGMENT_STATUSES = {
     "unknown_from_node",
     "unknown_to_node",
     "missing_edge",
-}
-
-SEGMENT_HIGHLIGHT_STYLES = {
-    "missing_edge": {
-        "color": "red",
-        "dash_array": None,
-    },
-    "unknown_from_node": {
-        "color": "red",
-        "dash_array": "6",
-    },
-    "unknown_to_node": {
-        "color": "red",
-        "dash_array": "6",
-    },
-    "extra_segment": {
-        "color": "orange",
-        "dash_array": "8",
-    },
 }
 
 
@@ -62,72 +52,6 @@ def _status_label(row: pd.Series) -> str:
     return "⚠️ Needs review"
 
 
-def _parse_path(value: Any) -> list[str]:
-    """Parse a saved JSON path value into node IDs."""
-    if value is None:
-        return []
-
-    if isinstance(value, list):
-        return [str(node) for node in value]
-
-    if isinstance(value, tuple):
-        return [str(node) for node in value]
-
-    if isinstance(value, str):
-        if not value.strip():
-            return []
-
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return []
-
-        if isinstance(parsed, list):
-            return [str(node) for node in parsed]
-
-    return []
-
-
-def _parse_json_object(value: Any) -> dict[str, Any]:
-    """Parse a saved JSON object value into a dictionary."""
-    if value is None:
-        return {}
-
-    if isinstance(value, dict):
-        return value
-
-    if isinstance(value, str):
-        if not value.strip():
-            return {}
-
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-
-        if isinstance(parsed, dict):
-            return parsed
-
-    return {}
-
-
-def _path_to_segments(path: list[str]) -> list[tuple[str, str]]:
-    """Convert a node path into ordered directed route segments."""
-    return list(zip(path, path[1:]))
-
-
-def _missing_edge_set(candidate_validation: dict[str, Any]) -> set[tuple[str, str]]:
-    """Return evaluator-reported missing edges as directed segment tuples."""
-    missing_edges: set[tuple[str, str]] = set()
-
-    for edge in candidate_validation.get("missing_edges") or []:
-        if isinstance(edge, (list, tuple)) and len(edge) == 2:
-            source, target = edge
-            missing_edges.add((str(source), str(target)))
-
-    return missing_edges
-
-
 def _selection_label(row: pd.Series) -> str:
     """Return a compact label for selecting a saved route evaluation."""
     row_id = row.get("id")
@@ -138,97 +62,6 @@ def _selection_label(row: pd.Series) -> str:
     destination = row.get("destination") or "?"
 
     return f"#{row_id} · {provider} · {time_part} · {origin} → {destination}"
-
-
-def _build_segment_rows_from_evaluation(
-    *,
-    candidate_path: list[str],
-    ground_truth_path: list[str],
-    candidate_validation: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Build display-only segment rows from saved evaluator output.
-
-    This intentionally does not re-validate the route against the graph. Raw
-    route parsing, graph validation, and missing-edge detection remain owned by
-    research.evaluation. This helper only formats the saved evaluator output
-    for dashboard inspection.
-    """
-    reference_segments = set(_path_to_segments(ground_truth_path))
-    unknown_nodes = {
-        str(node)
-        for node in candidate_validation.get("unknown_nodes") or []
-    }
-    missing_edges = _missing_edge_set(candidate_validation)
-
-    rows: list[dict[str, Any]] = []
-
-    for index, (from_node, to_node) in enumerate(_path_to_segments(candidate_path)):
-        segment = (from_node, to_node)
-        in_reference_route = segment in reference_segments
-
-        if from_node in unknown_nodes:
-            segment_status = "unknown_from_node"
-            notes = "Source node was reported as unknown by the evaluator."
-        elif to_node in unknown_nodes:
-            segment_status = "unknown_to_node"
-            notes = "Target node was reported as unknown by the evaluator."
-        elif segment in missing_edges:
-            segment_status = "missing_edge"
-            notes = "Evaluator reported that this directed edge is missing."
-        elif in_reference_route:
-            segment_status = "ok"
-            notes = "Matches the reference route."
-        else:
-            segment_status = "extra_segment"
-            notes = "Valid candidate segment, but not part of the reference route."
-
-        rows.append(
-            {
-                "index": index,
-                "from_node": from_node,
-                "to_node": to_node,
-                "in_reference_route": in_reference_route,
-                "segment_status": segment_status,
-                "notes": notes,
-            }
-        )
-
-    return rows
-
-
-def _add_segment_highlights_to_map(
-    *,
-    viz: RouteVisualization,
-    segment_rows: list[dict[str, Any]],
-) -> int:
-    """Add invalid/diverging segment overlays to the route map.
-
-    Returns the number of highlights added.
-    """
-    highlight_count = 0
-
-    for row in segment_rows:
-        status = row.get("segment_status")
-
-        if status not in SEGMENT_HIGHLIGHT_STYLES:
-            continue
-
-        style = SEGMENT_HIGHLIGHT_STYLES[status]
-
-        viz.add_segment_highlight(
-            from_node=str(row.get("from_node")),
-            to_node=str(row.get("to_node")),
-            status=str(status),
-            color=style["color"],
-            dash_array=style["dash_array"],
-            metadata={
-                "notes": row.get("notes", ""),
-                "in_reference_route": row.get("in_reference_route"),
-            },
-        )
-        highlight_count += 1
-
-    return highlight_count
 
 
 def _format_metric_value(value: Any, digits: int = 3) -> str:
@@ -331,8 +164,8 @@ def _render_selected_evaluation_summary(selected_row: dict[str, Any]) -> None:
     destination = selected_row.get("destination", "—")
     evaluation_id = selected_row.get("id", "—")
 
-    candidate_path = _parse_path(selected_row.get("candidate_path_json"))
-    ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
+    candidate_path = parse_path(selected_row.get("candidate_path_json"))
+    ground_truth_path = parse_path(selected_row.get("ground_truth_path_json"))
 
     candidate_edges = max(len(candidate_path) - 1, 0)
     ground_truth_edges = max(len(ground_truth_path) - 1, 0)
@@ -412,9 +245,9 @@ def _render_segment_inspection(selected_row: dict[str, Any]) -> None:
     """Render segment inspection for one selected saved evaluation row."""
     st.subheader("Route segment inspection")
 
-    candidate_path = _parse_path(selected_row.get("candidate_path_json"))
-    ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
-    raw_evaluation = _parse_json_object(selected_row.get("raw_evaluation_json"))
+    candidate_path = parse_path(selected_row.get("candidate_path_json"))
+    ground_truth_path = parse_path(selected_row.get("ground_truth_path_json"))
+    raw_evaluation = parse_json_object(selected_row.get("raw_evaluation_json"))
     candidate_validation = raw_evaluation.get("candidate_validation") or {}
 
     if len(candidate_path) < 2:
@@ -425,7 +258,7 @@ def _render_segment_inspection(selected_row: dict[str, Any]) -> None:
         st.info("No inspectable ground-truth route segments were saved for this evaluation.")
         return
 
-    segment_rows = _build_segment_rows_from_evaluation(
+    segment_rows = build_segment_rows_from_evaluation(
         candidate_path=candidate_path,
         ground_truth_path=ground_truth_path,
         candidate_validation=candidate_validation,
@@ -469,32 +302,11 @@ def _render_segment_inspection(selected_row: dict[str, Any]) -> None:
             st.info("No raw evaluator JSON was saved for this row.")
 
 
-def _render_map_html_file(
-    *,
-    html_path: Path,
-    height: int = 560,
-) -> None:
-    """Embed a saved HTML map through st.iframe using a data URL."""
-    html_text = html_path.read_text(encoding="utf-8")
-    encoded_html = base64.b64encode(html_text.encode("utf-8")).decode("ascii")
-
-    st.iframe(
-        f"data:text/html;base64,{encoded_html}",
-        height=height,
-    )
-
-
-def _safe_map_token(value: Any) -> str:
-    """Return a conservative token for temporary map filenames."""
-    text = str(value or "unknown")
-    return "".join(char if char.isalnum() else "_" for char in text)
-
-
 def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
     """Render candidate/reference route map for one selected saved evaluation."""
-    candidate_path = _parse_path(selected_row.get("candidate_path_json"))
-    ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
-    raw_evaluation = _parse_json_object(selected_row.get("raw_evaluation_json"))
+    candidate_path = parse_path(selected_row.get("candidate_path_json"))
+    ground_truth_path = parse_path(selected_row.get("ground_truth_path_json"))
+    raw_evaluation = parse_json_object(selected_row.get("raw_evaluation_json"))
     candidate_validation = raw_evaluation.get("candidate_validation") or {}
 
     if len(candidate_path) < 2:
@@ -505,7 +317,7 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
         st.info("No inspectable ground-truth route was saved for this evaluation.")
         return
 
-    segment_rows = _build_segment_rows_from_evaluation(
+    segment_rows = build_segment_rows_from_evaluation(
         candidate_path=candidate_path,
         ground_truth_path=ground_truth_path,
         candidate_validation=candidate_validation,
@@ -557,38 +369,26 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
         ground_truth_color="green",
     )
 
-    highlight_count = _add_segment_highlights_to_map(
+    highlight_count = add_segment_highlights_to_map(
         viz=viz,
         segment_rows=segment_rows,
     )
-
-    if highlight_count:
-        st.warning(
-            f"{highlight_count} invalid or diverging candidate segment(s) "
-            "are highlighted on the map."
-        )
-        st.caption(
-            "Map highlighting: red = invalid segment, "
-            "red dashed = unknown-node segment, "
-            "orange dashed = candidate segment outside the reference route."
-        )
-    else:
-        st.success("No invalid or diverging candidate segments were highlighted on the map.")
-
+    render_highlight_summary(highlight_count)
+    
     output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     safe_name = (
         "route_history_"
-        f"{_safe_map_token(evaluation_id)}_"
-        f"{_safe_map_token(provider)}_"
-        f"{_safe_map_token(origin)}_"
-        f"{_safe_map_token(destination)}.html"
+        f"{safe_map_token(evaluation_id)}_"
+        f"{safe_map_token(provider)}_"
+        f"{safe_map_token(origin)}_"
+        f"{safe_map_token(destination)}.html"
     )
     output_path = output_dir / safe_name
 
     viz.render(save_path=str(output_path))
-    _render_map_html_file(html_path=output_path, height=560)
+    render_map_html_file(html_path=output_path, height=560)
 
 
 def render_route_history_view() -> None:
