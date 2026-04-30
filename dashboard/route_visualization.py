@@ -24,6 +24,19 @@ class RouteLayer:
     missing_ground_truth_nodes: list[str] = field(default_factory=list)
 
 
+@dataclass
+class SegmentHighlight:
+    from_node: str
+    to_node: str
+    coordinates: list[Coordinate]
+    status: str
+    color: str
+    weight: int = 7
+    opacity: float = 0.95
+    dash_array: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 def node_coordinates_from_network_bundle(
     bundle: NetworkBundle,
 ) -> dict[str, Coordinate]:
@@ -72,6 +85,7 @@ class RouteVisualization:
         self.tiles = tiles
         self.strict_coordinates = strict_coordinates
         self.routes: list[RouteLayer] = []
+        self.segment_highlights: list[SegmentHighlight] = []
 
     def add_route(
         self,
@@ -112,6 +126,63 @@ class RouteVisualization:
                 missing_ground_truth_nodes=missing_ground_truth_nodes,
             )
         )
+
+    def add_segment_highlight(
+        self,
+        *,
+        from_node: str,
+        to_node: str,
+        status: str,
+        color: str,
+        metadata: dict[str, Any] | None = None,
+        dash_array: str | None = None,
+        weight: int = 7,
+        opacity: float = 0.95,
+    ) -> None:
+        """Add one highlighted segment overlay by node IDs.
+
+        If both endpoints have coordinates, the highlight renders as a line.
+        If only one endpoint has coordinates, it renders as a warning marker.
+        If neither endpoint has coordinates, it is skipped.
+        """
+        coordinates = self._resolve_partial_segment_coordinates(
+            from_node=from_node,
+            to_node=to_node,
+        )
+
+        if not coordinates:
+            return
+
+        self.segment_highlights.append(
+            SegmentHighlight(
+                from_node=from_node,
+                to_node=to_node,
+                coordinates=coordinates,
+                status=status,
+                color=color,
+                weight=weight,
+                opacity=opacity,
+                dash_array=dash_array,
+                metadata=metadata or {},
+            )
+        )
+
+    def _resolve_partial_segment_coordinates(
+        self,
+        *,
+        from_node: str,
+        to_node: str,
+    ) -> list[Coordinate]:
+        """Resolve coordinates for one segment, skipping missing endpoints."""
+        coords: list[Coordinate] = []
+
+        if from_node in self.node_coordinates:
+            coords.append(self.node_coordinates[from_node])
+
+        if to_node in self.node_coordinates:
+            coords.append(self.node_coordinates[to_node])
+
+        return coords
 
     def _resolve_coordinates(
         self,
@@ -174,6 +245,11 @@ class RouteVisualization:
                     all_lats.append(lat)
                     all_lons.append(lon)
 
+        for highlight in self.segment_highlights:
+            for lon, lat in highlight.coordinates:
+                all_lats.append(lat)
+                all_lons.append(lon)
+
         if not all_lats and self.node_coordinates:
             all_lats = [lat for lon, lat in self.node_coordinates.values()]
             all_lons = [lon for lon, lat in self.node_coordinates.values()]
@@ -181,7 +257,7 @@ class RouteVisualization:
         return all_lats, all_lons
 
     def render(self, save_path: str | None = None) -> folium.Map:
-        """Render the map with added route layers."""
+        """Render the map with added route layers and segment highlights."""
         all_lats, all_lons = self._map_bounds_points()
 
         if all_lats and all_lons:
@@ -291,6 +367,42 @@ class RouteVisualization:
                 ).add_to(feature_group)
 
             feature_group.add_to(route_map)
+
+        if self.segment_highlights:
+            highlight_group = folium.FeatureGroup(name="Segment highlights")
+
+            for highlight in self.segment_highlights:
+                lat_lons = [(lat, lon) for lon, lat in highlight.coordinates]
+
+                tooltip_html = self._format_metadata_html(
+                    {
+                        "status": highlight.status,
+                        **highlight.metadata,
+                    },
+                    f"{highlight.from_node} → {highlight.to_node}",
+                )
+
+                if len(lat_lons) >= 2:
+                    folium.PolyLine(
+                        locations=lat_lons,
+                        color=highlight.color,
+                        weight=highlight.weight,
+                        opacity=highlight.opacity,
+                        dash_array=highlight.dash_array,
+                        tooltip=folium.Tooltip(tooltip_html),
+                    ).add_to(highlight_group)
+
+                elif len(lat_lons) == 1:
+                    folium.CircleMarker(
+                        location=lat_lons[0],
+                        radius=6,
+                        color=highlight.color,
+                        fill=True,
+                        fill_color=highlight.color,
+                        tooltip=folium.Tooltip(tooltip_html),
+                    ).add_to(highlight_group)
+
+            highlight_group.add_to(route_map)
 
         folium.LayerControl().add_to(route_map)
 
