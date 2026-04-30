@@ -224,8 +224,6 @@ def _metric_cell(label: str, value: Any) -> str:
 
 def _render_history_overview_table(display_df: pd.DataFrame) -> None:
     """Render a compact overview table for saved route evaluations."""
-    st.subheader("Saved evaluations")
-
     overview_df = display_df.copy()
 
     overview_df["route"] = (
@@ -440,8 +438,6 @@ def _safe_map_token(value: Any) -> str:
 
 def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
     """Render candidate/reference route map for one selected saved evaluation."""
-    st.subheader("Route map")
-
     candidate_path = _parse_path(selected_row.get("candidate_path_json"))
     ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
 
@@ -516,8 +512,6 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
 
 
 def render_route_history_view() -> None:
-    st.header("Route evaluation history")
-
     history_df = load_route_evaluations()
 
     if history_df.empty:

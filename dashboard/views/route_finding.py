@@ -221,8 +221,6 @@ def render_route_map_preview(
     ground_truth_path: list[str],
 ) -> None:
     """Render a map preview for the selected route task."""
-    st.subheader("Route map preview")
-
     node_coordinates = node_coordinates_from_network_bundle(bundle)
 
     if not node_coordinates:
@@ -403,12 +401,6 @@ def render_route_eval_card(
 
 def render_route_finding_view() -> None:
     """Render the route-finding evaluation view."""
-    st.header("Route-finding evaluation")
-    st.caption(
-        "Load the SSAL-native route network, generate a route prompt, "
-        "run both models, and evaluate their routes."
-    )
-
     try:
         bundle = load_route_network_bundle()
     except Exception as exc:
@@ -480,8 +472,6 @@ def render_route_finding_view() -> None:
         st.caption("Route network")
         st.write(f"SSAL hash: `{bundle.ssal_hash[:12]}`")
         st.write(f"Nodes: `{len(nodes)}`")
-
-    st.subheader("Route task")
 
     col1, col2 = st.columns(2)
 
