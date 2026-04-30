@@ -1,6 +1,6 @@
 # llm-compare-dashboard
 
-Current release: **v0.2.1**
+Current release: **v0.3.0**
 
 This project is a local Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
 
@@ -18,9 +18,9 @@ streamlit run app.py
 
 ## Version note
 
-This repository is currently at `v0.2.1`.
+This repository is currently at `v0.3.0`.
 
-This release builds on the `v0.2.0` route-evaluation history view by adding route segment inspection for saved route evaluations.
+This release builds on the `v0.2.1` route segment-inspection workflow by adding dashboard route-map visualisation for route comparison and highlighted route replay.
 
 Current dashboard capabilities include:
 
@@ -36,6 +36,12 @@ Current dashboard capabilities include:
 - compact saved-evaluation overview table
 - selected-evaluation summary card
 - route segment inspection using saved evaluator output
+- reusable Folium route visualisation
+- pre-call route map preview in route-finding mode
+- post-evaluation OpenAI/Gemini route maps
+- route-history map replay for saved evaluations
+- highlighted invalid, missing, and diverging route segments
+- toggleable candidate, ground-truth, highlight, and metadata map layers
 
 The route-finding mode requires the sibling `research` repository at `v0.1.0` or a compatible version. In the expected local layout, the dashboard installs it through:
 
@@ -70,6 +76,8 @@ The goal is to make model comparison reproducible. Instead of manually copying p
 - compare model-generated routes against Dijkstra ground truth
 - review saved route evaluations in a dedicated history view
 - inspect saved routes as ordered node-to-node segments
+- compare candidate and reference routes visually on Folium maps
+- replay saved route evaluations with route maps and segment highlights
 - export route-history rows for offline research evaluation
 
 ## Relationship to the research repo
@@ -144,6 +152,7 @@ It includes:
 - default origin node `1004552350`
 - default destination node `12143305053`
 - Dijkstra ground-truth path and length display
+- pre-call map preview for the selected Dijkstra reference route
 - editable route prompt template in a collapsed debug panel
 - generated prompt preview and download
 - OpenAI and Gemini API calls in parallel
@@ -152,8 +161,10 @@ It includes:
 - route evaluation using `research.evaluation.evaluate_route_response()`
 - route task persistence
 - route evaluation persistence
-- metric-by-metric OpenAI/Gemini summary table
 - detailed provider/evaluation cards
+- side-by-side OpenAI and Gemini route maps after evaluation
+- candidate route and ground-truth route overlays
+- highlighted invalid, missing, and diverging candidate segments when evaluator output is available
 - current route-test JSON export
 
 A route result is shown as satisfactory only when:
@@ -181,6 +192,9 @@ It includes:
 - candidate/reference edge counts
 - route segment inspection table
 - raw evaluator output expander for debugging
+- map replay for selected saved evaluations
+- candidate route, ground-truth route, and segment highlights as separate toggleable map layers
+- toggleable network metadata overlay inside rendered maps
 - detailed history table in a collapsed expander
 - saved route-history JSON export for offline research evaluation
 
@@ -201,6 +215,29 @@ The dashboard does not re-validate graph edges for segment inspection. It format
 This keeps the API-call workflow separate from result review. The history view is display-only: it does not include destructive actions such as clearing saved evaluations.
 
 ## Release notes
+
+### v0.3.0
+
+Added route-map visualisation for route comparison and highlighted route replay.
+
+Highlights:
+
+- reusable Folium route maps integrated into the dashboard
+- pre-call Dijkstra reference-route map preview in route-finding mode
+- side-by-side OpenAI and Gemini route maps after route evaluation
+- map replay for saved route evaluations in route history
+- candidate route, ground-truth route, and segment highlights as separate toggleable map layers
+- highlighted invalid, missing, unknown-node, and diverging route segments based on evaluator output
+- shared route-map helper module for path parsing, segment-row formatting, highlighting, map embedding, and safe filenames
+- toggleable metadata overlay inside rendered maps
+- map embedding uses `st.iframe` data URLs instead of deprecated `st.components.v1.html`
+- increased default token budgets for route responses
+
+Known remaining map work:
+
+- full loaded-network layer is not implemented yet
+- route node markers and node-ID inspection/copying are still future work
+- map-based OD-pair exploration is not complete yet
 
 ### v0.2.1
 
@@ -281,6 +318,8 @@ python -c "from research.network_loader import load_network_bundle_from_gpkg; pr
 python -c "from dashboard.views.general import render_general_view; print('general view ok')"
 python -c "from dashboard.views.route_finding import render_route_finding_view; print('route view ok')"
 python -c "from dashboard.views.route_history import render_route_history_view; print('route history view ok')"
+python -c "from dashboard.route_visualization import RouteVisualization; print('route visualization ok')"
+python -c "from dashboard.route_map_helpers import build_segment_rows_from_evaluation; print('route map helpers ok')"
 ```
 
 You can also compile the main dashboard modules:
@@ -292,6 +331,8 @@ python -m py_compile \
   dashboard/db.py \
   dashboard/network.py \
   dashboard/route_prompts.py \
+  dashboard/route_visualization.py \
+  dashboard/route_map_helpers.py \
   dashboard/views/general.py \
   dashboard/views/route_finding.py \
   dashboard/views/route_history.py
@@ -552,6 +593,7 @@ llm-compare-dashboard/
     network.py                   Local NetworkBundle loading
     route_prompts.py             Route prompt template and builder
     route_visualization.py       Reusable Folium route visualisation helpers
+    route_map_helpers.py         Shared map embedding and segment-highlight helpers
     views/
       general.py                 General prompt-comparison view
       route_finding.py           Route-finding view for new route tests
@@ -584,7 +626,8 @@ The smoke map disables online base-map tiles by default, so it avoids OpenStreet
 - Route-finding mode runs OpenAI and Gemini calls in parallel because those calls are network-bound.
 - The dashboard shows per-call usage metadata. It does not show a provider-wide “tokens left” counter.
 - Saved-history export is available in the general and route-evaluation history views, but destructive “clear history” controls are intentionally not shown in the current UI.
-- Route segment inspection is currently available from the route-evaluation history view, not directly under the latest route-finding result cards.
+- Route comparison maps are available in route-finding results and route-evaluation history.
+- Full network exploration, route node markers, and node-ID copying are planned future map improvements.
 - Keep `.env` out of Git.
 - Keep `history.db` out of Git.
 - Keep `.cache/` out of Git if you later enable remote network caching.
