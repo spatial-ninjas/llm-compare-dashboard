@@ -79,13 +79,76 @@ class RouteVisualization:
         metadata: dict[str, Any] | None = None,
         tiles: str | None = None,
         strict_coordinates: bool = False,
+        metadata_overlay_visible: bool = False,
     ):
         self.node_coordinates = node_coordinates
         self.metadata = metadata or {}
         self.tiles = tiles
         self.strict_coordinates = strict_coordinates
+        self.metadata_overlay_visible = metadata_overlay_visible
         self.routes: list[RouteLayer] = []
         self.segment_highlights: list[SegmentHighlight] = []
+
+
+    def _add_metadata_overlay(self, route_map: folium.Map) -> None:
+        """Add a toggleable fixed metadata overlay to the map."""
+        if not self.metadata:
+            return
+
+        network_info = self._format_metadata_html(self.metadata, "Network Metadata")
+        initial_display = "block" if self.metadata_overlay_visible else "none"
+
+        fixed_html = f"""
+        <div
+            id="network-metadata-toggle"
+            style="
+                position: fixed;
+                bottom: 50px;
+                left: 50px;
+                z-index: 9999;
+            "
+        >
+            <button
+                onclick="
+                    var panel = document.getElementById('network-metadata-panel');
+                    if (panel.style.display === 'none') {{
+                        panel.style.display = 'block';
+                    }} else {{
+                        panel.style.display = 'none';
+                    }}
+                "
+                style="
+                    background-color: white;
+                    border: 2px solid black;
+                    border-radius: 5px;
+                    padding: 6px 10px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    margin-bottom: 6px;
+                "
+            >
+                Network metadata
+            </button>
+
+            <div
+                id="network-metadata-panel"
+                style="
+                    display: {initial_display};
+                    width: 250px;
+                    background-color: white;
+                    padding: 10px;
+                    border: 2px solid black;
+                    border-radius: 5px;
+                    opacity: 0.9;
+                "
+            >
+                {network_info}
+            </div>
+        </div>
+        """
+
+        route_map.get_root().html.add_child(folium.Element(fixed_html))
+
 
     def add_route(
         self,
@@ -127,6 +190,7 @@ class RouteVisualization:
             )
         )
 
+
     def add_segment_highlight(
         self,
         *,
@@ -167,6 +231,7 @@ class RouteVisualization:
             )
         )
 
+
     def _resolve_partial_segment_coordinates(
         self,
         *,
@@ -183,6 +248,7 @@ class RouteVisualization:
             coords.append(self.node_coordinates[to_node])
 
         return coords
+
 
     def _resolve_coordinates(
         self,
@@ -204,6 +270,7 @@ class RouteVisualization:
         ]
 
         return coordinates, missing_nodes
+
 
     def _format_metadata_html(self, metadata: dict[str, Any], title: str) -> str:
         """Format metadata as a small HTML table for Folium popups/tooltips."""
@@ -229,6 +296,7 @@ class RouteVisualization:
             + "".join(rows)
             + "</table>"
         )
+
 
     def _map_bounds_points(self) -> tuple[list[float], list[float]]:
         """Return latitude and longitude lists used for map centering/bounds."""
@@ -256,6 +324,7 @@ class RouteVisualization:
 
         return all_lats, all_lons
 
+
     def _add_ground_truth_layer(
         self,
         *,
@@ -282,6 +351,7 @@ class RouteVisualization:
         ).add_to(ground_truth_group)
 
         ground_truth_group.add_to(route_map)
+
 
     def _add_candidate_layer(
         self,
@@ -348,6 +418,7 @@ class RouteVisualization:
 
         candidate_group.add_to(route_map)
 
+
     def _add_segment_highlight_layer(self, route_map: folium.Map) -> None:
         """Add segment highlights as a separate toggleable layer."""
         if not self.segment_highlights:
@@ -388,6 +459,7 @@ class RouteVisualization:
 
         highlight_group.add_to(route_map)
 
+
     def render(self, save_path: str | None = None) -> folium.Map:
         """Render the map with added route layers and segment highlights."""
         all_lats, all_lons = self._map_bounds_points()
@@ -406,26 +478,7 @@ class RouteVisualization:
         else:
             route_map = folium.Map(location=[0, 0], zoom_start=2, tiles=self.tiles)
 
-        if self.metadata:
-            network_info = self._format_metadata_html(self.metadata, "Network Metadata")
-
-            fixed_html = f"""
-            <div style="
-                position: fixed;
-                bottom: 50px;
-                left: 50px;
-                width: 250px;
-                background-color: white;
-                padding: 10px;
-                border: 2px solid black;
-                border-radius: 5px;
-                z-index: 9999;
-                opacity: 0.8;
-            ">
-                {network_info}
-            </div>
-            """
-            route_map.get_root().html.add_child(folium.Element(fixed_html))
+        self._add_metadata_overlay(route_map)
 
         for index, layer in enumerate(self.routes, start=1):
             label = layer.metadata.get("label", f"Route {index}")
@@ -452,6 +505,7 @@ class RouteVisualization:
             route_map.save(save_path)
 
         return route_map
+
 
     def render_html(self) -> str:
         """Render the map as an HTML string for Streamlit embedding."""

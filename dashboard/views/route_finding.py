@@ -357,77 +357,6 @@ def render_provider_route_map(
     render_map_html_file(html_path=output_path, height=520)
 
 
-def render_route_eval_summary_table(
-    *,
-    openai_evaluation: dict[str, Any],
-    gemini_evaluation: dict[str, Any],
-) -> None:
-    """Render a compact metric-by-metric route evaluation comparison."""
-    rows = [
-        {
-            "Metric": "Status",
-            "OpenAI": _evaluation_status_label(openai_evaluation),
-            "Gemini": _evaluation_status_label(gemini_evaluation),
-        },
-        {
-            "Metric": "Valid JSON",
-            "OpenAI": _format_bool(openai_evaluation.get("valid_json")),
-            "Gemini": _format_bool(gemini_evaluation.get("valid_json")),
-        },
-        {
-            "Metric": "Valid path",
-            "OpenAI": _format_bool(openai_evaluation.get("valid_path")),
-            "Gemini": _format_bool(gemini_evaluation.get("valid_path")),
-        },
-        {
-            "Metric": "Exact shortest path",
-            "OpenAI": _format_bool(openai_evaluation.get("exact_path_match")),
-            "Gemini": _format_bool(gemini_evaluation.get("exact_path_match")),
-        },
-        {
-            "Metric": "Candidate length",
-            "OpenAI": _format_metric(openai_evaluation.get("candidate_computed_length")),
-            "Gemini": _format_metric(gemini_evaluation.get("candidate_computed_length")),
-        },
-        {
-            "Metric": "Ground-truth length",
-            "OpenAI": _format_metric(openai_evaluation.get("ground_truth_length")),
-            "Gemini": _format_metric(gemini_evaluation.get("ground_truth_length")),
-        },
-        {
-            "Metric": "Relative length error",
-            "OpenAI": _format_metric(openai_evaluation.get("relative_length_error")),
-            "Gemini": _format_metric(gemini_evaluation.get("relative_length_error")),
-        },
-        {
-            "Metric": "Node overlap",
-            "OpenAI": _format_metric(openai_evaluation.get("node_overlap")),
-            "Gemini": _format_metric(gemini_evaluation.get("node_overlap")),
-        },
-        {
-            "Metric": "Edge overlap",
-            "OpenAI": _format_metric(openai_evaluation.get("edge_overlap")),
-            "Gemini": _format_metric(gemini_evaluation.get("edge_overlap")),
-        },
-        {
-            "Metric": "Reason",
-            "OpenAI": openai_evaluation.get("reason") or "—",
-            "Gemini": gemini_evaluation.get("reason") or "—",
-        },
-    ]
-
-    st.dataframe(
-        pd.DataFrame(rows),
-        width="stretch",
-        hide_index=True,
-        column_config={
-            "Metric": st.column_config.TextColumn("Metric", width="medium"),
-            "OpenAI": st.column_config.TextColumn("OpenAI", width="medium"),
-            "Gemini": st.column_config.TextColumn("Gemini", width="medium"),
-        },
-    )
-
-
 def render_route_eval_card(
     *,
     title: str,
@@ -452,13 +381,6 @@ def render_route_eval_card(
     if evaluation is None:
         st.warning("No route evaluation available.")
         return
-
-    if _is_satisfactory_evaluation(evaluation):
-        st.success("Evaluation satisfactory")
-    elif evaluation.get("status") == "evaluated":
-        st.warning("Evaluation completed, but the route was not an exact valid match")
-    else:
-        st.warning(f"Evaluation status: {evaluation.get('status')}")
 
     col1, col2 = st.columns(2)
 
@@ -837,40 +759,6 @@ def render_route_finding_view() -> None:
         width="stretch",
     )
 
-    st.subheader("Route evaluation results")
-
-    render_route_eval_summary_table(
-        openai_evaluation=openai_evaluation,
-        gemini_evaluation=gemini_evaluation,
-    )
-
-    with st.expander("Route maps", expanded=True):
-        map_col1, map_col2 = st.columns(2)
-
-        with map_col1:
-            st.markdown("**OpenAI route map**")
-            render_provider_route_map(
-                bundle=bundle,
-                provider="OpenAI",
-                model=_get_result_model(openai_result, openai_model),
-                origin=origin,
-                destination=destination,
-                ground_truth_path=ground_truth["path"],
-                evaluation=openai_evaluation,
-            )
-
-        with map_col2:
-            st.markdown("**Gemini route map**")
-            render_provider_route_map(
-                bundle=bundle,
-                provider="Gemini",
-                model=_get_result_model(gemini_result, gemini_model),
-                origin=origin,
-                destination=destination,
-                ground_truth_path=ground_truth["path"],
-                evaluation=gemini_evaluation,
-            )
-
     result_col1, result_col2 = st.columns(2)
 
     with result_col1:
@@ -879,10 +767,28 @@ def render_route_finding_view() -> None:
             api_result=openai_result,
             evaluation=openai_evaluation,
         )
+        render_provider_route_map(
+            bundle=bundle,
+            provider="OpenAI",
+            model=_get_result_model(openai_result, openai_model),
+            origin=origin,
+            destination=destination,
+            ground_truth_path=ground_truth["path"],
+            evaluation=openai_evaluation,
+        )
 
     with result_col2:
         render_route_eval_card(
             title="Gemini",
             api_result=gemini_result,
+            evaluation=gemini_evaluation,
+        )
+        render_provider_route_map(
+            bundle=bundle,
+            provider="Gemini",
+            model=_get_result_model(gemini_result, gemini_model),
+            origin=origin,
+            destination=destination,
+            ground_truth_path=ground_truth["path"],
             evaluation=gemini_evaluation,
         )
