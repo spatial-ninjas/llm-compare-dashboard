@@ -37,6 +37,15 @@ class SegmentHighlight:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class NetworkEdgeLayer:
+    edges: list[tuple[str, str, list[Coordinate], dict[str, Any]]]
+    name: str = "Full network"
+    color: str = "gray"
+    weight: int = 1
+    opacity: float = 0.35
+
+
 def node_coordinates_from_network_bundle(
     bundle: NetworkBundle,
 ) -> dict[str, Coordinate]:
@@ -48,7 +57,10 @@ def node_coordinates_from_network_bundle(
     coordinates: dict[str, Coordinate] = {}
 
     for source, edges in bundle.graph.adjacency.items():
+        source_id = str(source)
+
         for edge in edges:
+            target_id = str(edge.target)
             attrs = edge.attrs or {}
 
             from_x = attrs.get("from_x")
@@ -57,10 +69,10 @@ def node_coordinates_from_network_bundle(
             to_y = attrs.get("to_y")
 
             if from_x is not None and from_y is not None:
-                coordinates[source] = (float(from_x), float(from_y))
+                coordinates[source_id] = (float(from_x), float(from_y))
 
             if to_x is not None and to_y is not None:
-                coordinates[edge.target] = (float(to_x), float(to_y))
+                coordinates[target_id] = (float(to_x), float(to_y))
 
     return coordinates
 
@@ -88,6 +100,7 @@ class RouteVisualization:
         self.metadata_overlay_visible = metadata_overlay_visible
         self.routes: list[RouteLayer] = []
         self.segment_highlights: list[SegmentHighlight] = []
+        self.network_layers: list[NetworkEdgeLayer] = []
 
 
     def _add_metadata_overlay(self, route_map: folium.Map) -> None:
@@ -232,6 +245,52 @@ class RouteVisualization:
         )
 
 
+    def add_network_layer(
+        self,
+        *,
+        edges: list[tuple[str, str, dict[str, Any]]],
+        name: str = "Full network",
+        color: str = "gray",
+        weight: int = 1,
+        opacity: float = 0.35,
+    ) -> None:
+        """Add a toggleable full-network edge layer.
+
+        The visualizer only draws edges whose endpoint coordinates are known.
+        It does not validate graph connectivity or route correctness.
+        """
+        drawable_edges: list[tuple[str, str, list[Coordinate], dict[str, Any]]] = []
+
+        for source, target, metadata in edges:
+            if source not in self.node_coordinates:
+                continue
+
+            if target not in self.node_coordinates:
+                continue
+
+            drawable_edges.append(
+                (
+                    source,
+                    target,
+                    [
+                        self.node_coordinates[source],
+                        self.node_coordinates[target],
+                    ],
+                    metadata,
+                )
+            )
+
+        self.network_layers.append(
+            NetworkEdgeLayer(
+                edges=drawable_edges,
+                name=name,
+                color=color,
+                weight=weight,
+                opacity=opacity,
+            )
+        )
+
+
     def _resolve_partial_segment_coordinates(
         self,
         *,
@@ -317,6 +376,12 @@ class RouteVisualization:
             for lon, lat in highlight.coordinates:
                 all_lats.append(lat)
                 all_lons.append(lon)
+
+        for network_layer in self.network_layers:
+            for _, _, coordinates, _ in network_layer.edges:
+                for lon, lat in coordinates:
+                    all_lats.append(lat)
+                    all_lons.append(lon)
 
         if not all_lats and self.node_coordinates:
             all_lats = [lat for lon, lat in self.node_coordinates.values()]
@@ -460,6 +525,37 @@ class RouteVisualization:
         highlight_group.add_to(route_map)
 
 
+    def _add_network_layers(self, route_map: folium.Map) -> None:
+        """Add full-network edge layers as lightweight toggleable map layers."""
+        for network_layer in self.network_layers:
+            if not network_layer.edges:
+                continue
+
+            feature_group = folium.FeatureGroup(
+                name=network_layer.name,
+                show=True,
+            )
+
+            network_segments = [
+                [(lat, lon) for lon, lat in coordinates]
+                for _, _, coordinates, _ in network_layer.edges
+                if len(coordinates) >= 2
+            ]
+
+            if network_segments:
+                folium.PolyLine(
+                    locations=network_segments,
+                    color=network_layer.color,
+                    weight=network_layer.weight,
+                    opacity=network_layer.opacity,
+                    tooltip=folium.Tooltip(
+                        f"{network_layer.name}: {len(network_segments)} edges"
+                    ),
+                ).add_to(feature_group)
+
+            feature_group.add_to(route_map)
+
+
     def render(self, save_path: str | None = None) -> folium.Map:
         """Render the map with added route layers and segment highlights."""
         all_lats, all_lons = self._map_bounds_points()
@@ -479,6 +575,7 @@ class RouteVisualization:
             route_map = folium.Map(location=[0, 0], zoom_start=2, tiles=self.tiles)
 
         self._add_metadata_overlay(route_map)
+        self._add_network_layers(route_map)
 
         for index, layer in enumerate(self.routes, start=1):
             label = layer.metadata.get("label", f"Route {index}")

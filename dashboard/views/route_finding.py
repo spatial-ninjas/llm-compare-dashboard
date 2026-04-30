@@ -23,6 +23,7 @@ from dashboard.network import load_route_network_bundle
 from dashboard.route_map_helpers import (
     add_segment_highlights_to_map,
     build_segment_rows_from_evaluation,
+    network_edges_from_bundle,
     render_highlight_summary,
     render_map_html_file,
     safe_map_token,
@@ -242,10 +243,18 @@ def render_route_map_preview(
         },
     )
 
+    viz.add_network_layer(
+        edges=network_edges_from_bundle(bundle),
+        name="Full network",
+        color="gray",
+        weight=1,
+        opacity=0.25,
+    )
+
     viz.add_route(
         route=ground_truth_path,
         metadata={
-            "label": "Dijkstra reference route",
+            "label": "Dijkstra reference",
             "origin": origin,
             "destination": destination,
             "source": "research.graph.dijkstra_shortest_path",
@@ -311,6 +320,14 @@ def render_provider_route_map(
             "origin": origin,
             "destination": destination,
         },
+    )
+
+    viz.add_network_layer(
+        edges=network_edges_from_bundle(bundle),
+        name="Full network",
+        color="gray",
+        weight=1,
+        opacity=0.2,
     )
 
     viz.add_route(
