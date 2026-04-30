@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
+from pathlib import Path
+import tempfile
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from dashboard.db import export_route_history_json, load_route_evaluations
+from dashboard.network import load_route_network_bundle
+from dashboard.route_visualization import (
+    RouteVisualization,
+    node_coordinates_from_network_bundle,
+)
 
 
 INVALID_SEGMENT_STATUSES = {
@@ -409,6 +417,104 @@ def _render_segment_inspection(selected_row: dict[str, Any]) -> None:
             st.info("No raw evaluator JSON was saved for this row.")
 
 
+def _render_map_html_file(
+    *,
+    html_path: Path,
+    height: int = 560,
+) -> None:
+    """Embed a saved HTML map through st.iframe using a data URL."""
+    html_text = html_path.read_text(encoding="utf-8")
+    encoded_html = base64.b64encode(html_text.encode("utf-8")).decode("ascii")
+
+    st.iframe(
+        f"data:text/html;base64,{encoded_html}",
+        height=height,
+    )
+
+
+def _safe_map_token(value: Any) -> str:
+    """Return a conservative token for temporary map filenames."""
+    text = str(value or "unknown")
+    return "".join(char if char.isalnum() else "_" for char in text)
+
+
+def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
+    """Render candidate/reference route map for one selected saved evaluation."""
+    st.subheader("Route map")
+
+    candidate_path = _parse_path(selected_row.get("candidate_path_json"))
+    ground_truth_path = _parse_path(selected_row.get("ground_truth_path_json"))
+
+    if len(candidate_path) < 2:
+        st.info("No inspectable candidate route was saved for this evaluation.")
+        return
+
+    if len(ground_truth_path) < 2:
+        st.info("No inspectable ground-truth route was saved for this evaluation.")
+        return
+
+    try:
+        bundle = load_route_network_bundle()
+    except Exception as exc:
+        st.warning(f"Could not load route network for map rendering: {exc}")
+        return
+
+    node_coordinates = node_coordinates_from_network_bundle(bundle)
+
+    if not node_coordinates:
+        st.info("No node coordinates are available for route map rendering.")
+        return
+
+    provider = selected_row.get("provider", "provider")
+    model = selected_row.get("model", "model")
+    origin = selected_row.get("origin", "?")
+    destination = selected_row.get("destination", "?")
+    evaluation_id = selected_row.get("id", "unknown")
+
+    provider_color = "blue"
+    if str(provider).lower() == "gemini":
+        provider_color = "purple"
+
+    viz = RouteVisualization(
+        node_coordinates=node_coordinates,
+        metadata={
+            "ssal_hash": selected_row.get("ssal_hash", bundle.ssal_hash[:12]),
+            "evaluation_id": evaluation_id,
+            "provider": provider,
+            "model": model,
+        },
+    )
+
+    viz.add_route(
+        route=candidate_path,
+        ground_truth=ground_truth_path,
+        metadata={
+            "label": f"{provider} candidate route",
+            "model": model,
+            "origin": origin,
+            "destination": destination,
+            "evaluation_id": evaluation_id,
+        },
+        color=provider_color,
+        ground_truth_color="green",
+    )
+
+    output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = (
+        "route_history_"
+        f"{_safe_map_token(evaluation_id)}_"
+        f"{_safe_map_token(provider)}_"
+        f"{_safe_map_token(origin)}_"
+        f"{_safe_map_token(destination)}.html"
+    )
+    output_path = output_dir / safe_name
+
+    viz.render(save_path=str(output_path))
+    _render_map_html_file(html_path=output_path, height=560)
+
+
 def render_route_history_view() -> None:
     st.header("Route evaluation history")
 
@@ -418,7 +524,7 @@ def render_route_history_view() -> None:
         st.info("No saved route evaluations yet. Run a route evaluation first.")
         return
 
-    with st.expander("Filters", expanded=True):
+    with st.expander("Filters", expanded=False):
         provider_options = sorted(history_df["provider"].dropna().unique())
         selected_providers = st.multiselect(
             "Provider",
@@ -508,4 +614,8 @@ def render_route_history_view() -> None:
     selected_row = selection_df.loc[selection_df["id"] == selected_id].iloc[0].to_dict()
 
     _render_selected_evaluation_summary(selected_row)
+
+    with st.expander("Map replay", expanded=True):
+        _render_selected_route_map(selected_row)
+
     _render_segment_inspection(selected_row)
