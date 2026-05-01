@@ -34,6 +34,7 @@ from dashboard.route_prompts import (
     DEFAULT_SSAL_PROFILE_NAME,
     DEFAULT_SSAL_SCHEMA_DESCRIPTION,
     build_route_prompt,
+    validate_route_prompt_template,
 )
 from dashboard.route_visualization import (
     RouteVisualization,
@@ -704,19 +705,19 @@ def render_route_finding_view() -> None:
         DEFAULT_ROUTE_PROMPT_TEMPLATE,
     )
 
-    try:
-        prompt = build_route_prompt(
-            ssal_text=bundle.ssal_text,
-            origin=origin,
-            destination=destination,
-            template=template,
-        )
-    except KeyError as exc:
-        st.error(f"Prompt template is missing or has an unknown placeholder: {exc}")
-        return
-    except ValueError as exc:
-        st.error(f"Prompt template formatting failed: {exc}")
-        return
+    template_errors = validate_route_prompt_template(template)
+    prompt = ""
+
+    if not template_errors:
+        try:
+            prompt = build_route_prompt(
+                ssal_text=bundle.ssal_text,
+                origin=origin,
+                destination=destination,
+                template=template,
+            )
+        except ValueError as exc:
+            template_errors = [str(exc)]
 
     with st.expander("Debug / prompt and network details", expanded=False):
         st.subheader("SSAL profile")
@@ -739,23 +740,37 @@ def render_route_finding_view() -> None:
             st.session_state.route_prompt_template = edited_template
             st.rerun()
 
+        if template_errors:
+            st.error("Prompt template validation failed.")
+            for error in template_errors:
+                st.warning(error)
+            st.info(
+                "Fix the template before running provider calls. "
+                "Literal JSON or SSAL braces must be escaped as {{ and }}."
+            )
+        else:
+            st.success("Prompt template validation passed.")
+
         st.subheader("Generated prompt")
 
-        st.caption("This is the full prompt that will be sent to the models.")
+        if template_errors:
+            st.info("Generated prompt preview is unavailable until the template is valid.")
+        else:
+            st.caption("This is the full prompt that will be sent to the models.")
 
-        st.text_area(
-            "Generated route prompt",
-            value=prompt,
-            height=420,
-        )
+            st.text_area(
+                "Generated route prompt",
+                value=prompt,
+                height=420,
+            )
 
-        st.download_button(
-            "Download generated prompt",
-            data=prompt,
-            file_name=f"route_prompt_{origin}_to_{destination}.txt",
-            mime="text/plain",
-            width="stretch",
-        )
+            st.download_button(
+                "Download generated prompt",
+                data=prompt,
+                file_name=f"route_prompt_{origin}_to_{destination}.txt",
+                mime="text/plain",
+                width="stretch",
+            )
 
         st.subheader("Network")
         st.write(f"GeoPackage: `{bundle.gpkg_path}`")
@@ -772,6 +787,7 @@ def render_route_finding_view() -> None:
         "Run route test",
         type="primary",
         width="stretch",
+        disabled=bool(template_errors),
     )
 
     if not run_button:

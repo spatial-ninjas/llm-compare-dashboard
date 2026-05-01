@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from string import Formatter
+
 
 DEFAULT_SSAL_PROFILE_NAME = "default_length_name_oneway_coords"
+
+REQUIRED_ROUTE_PROMPT_PLACEHOLDERS = {"origin", "destination", "ssal_text"}
 
 DEFAULT_SSAL_SCHEMA_DESCRIPTION = """
 Node_ID:
@@ -61,6 +65,64 @@ SSAL:
 """.strip()
 
 
+def _base_placeholder_name(field_name: str) -> str:
+    """Return the root placeholder name for a Python format field."""
+    for separator in (".", "["):
+        if separator in field_name:
+            return field_name.split(separator, 1)[0]
+
+    return field_name
+
+
+def validate_route_prompt_template(template: str) -> list[str]:
+    """Return validation errors for a route prompt template.
+
+    Route prompt templates use Python str.format placeholders. Literal JSON
+    or SSAL braces must therefore be escaped as {{ and }}.
+    """
+    formatter = Formatter()
+    placeholders: set[str] = set()
+    errors: list[str] = []
+
+    try:
+        parsed_template = list(formatter.parse(template))
+    except ValueError as exc:
+        return [
+            "Template has malformed braces. "
+            "Escape literal JSON/SSAL braces as {{ and }}. "
+            f"Details: {exc}"
+        ]
+
+    for _, field_name, _, _ in parsed_template:
+        if field_name is None:
+            continue
+
+        if not field_name:
+            errors.append(
+                "Template contains an empty placeholder. "
+                "Use {origin}, {destination}, or {ssal_text}."
+            )
+            continue
+
+        placeholders.add(_base_placeholder_name(field_name))
+
+    missing_placeholders = REQUIRED_ROUTE_PROMPT_PLACEHOLDERS - placeholders
+    unknown_placeholders = placeholders - REQUIRED_ROUTE_PROMPT_PLACEHOLDERS
+
+    for placeholder in sorted(missing_placeholders):
+        errors.append(f"Template is missing required placeholder: {{{placeholder}}}")
+
+    for placeholder in sorted(unknown_placeholders):
+        errors.append(f"Template has unknown placeholder: {{{placeholder}}}")
+
+    return errors
+
+
+def route_prompt_template_is_valid(template: str) -> bool:
+    """Return whether a route prompt template passes validation."""
+    return not validate_route_prompt_template(template)
+
+
 def build_route_prompt(
     *,
     ssal_text: str,
@@ -75,6 +137,11 @@ def build_route_prompt(
 
     Literal JSON braces inside the template must be escaped as {{ and }}.
     """
+    validation_errors = validate_route_prompt_template(template)
+
+    if validation_errors:
+        raise ValueError("; ".join(validation_errors))
+
     return template.format(
         origin=origin,
         destination=destination,
