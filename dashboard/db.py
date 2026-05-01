@@ -1,17 +1,24 @@
 """SQLite persistence helpers for the dashboard.
 
-The dashboard keeps generic provider calls and route-specific evaluation data
-separate:
+The dashboard stores four related kinds of local data:
 
 - runs stores one row per OpenAI/Gemini API call.
-- route_tasks stores one route-finding task, including origin,
-  destination, SSAL hash, prompt template, and Dijkstra ground truth.
-- route_evaluations stores evaluator metrics for one provider response on
-  one route task.
+- route_prompt_templates stores reusable user-defined route prompt templates.
+- route_tasks stores one route-finding task, including origin, destination,
+  SSAL hash, prompt template snapshot, prompt template name, SSAL profile name,
+  and Dijkstra ground truth.
+- route_evaluations stores evaluator metrics for one provider response on one
+  route task.
 
-Route-specific rows link back to generic provider calls through run_id.
-This lets the general prompt-comparison history stay reusable while route
-evaluation can add structured metrics without overloading the runs table.
+Route-specific evaluation rows link back to generic provider calls through
+run_id and to route tasks through task_id. This keeps the general
+prompt-comparison history reusable while route evaluation can add structured
+metrics without overloading the runs table.
+
+Reusable prompt templates are intentionally separate from route tasks. A route
+task stores a snapshot of the actual prompt template text and metadata used for
+that run, so old experiments remain reproducible even if a saved template is
+later edited, renamed, or deleted.
 """
 
 import json
@@ -41,17 +48,6 @@ def _json_dumps(value: Any) -> str | None:
         return None
 
     return json.dumps(value, ensure_ascii=False)
-
-
-def _json_loads(value: str | None) -> Any:
-    """Deserialize optional JSON data from SQLite storage."""
-    if not value:
-        return None
-
-    try:
-        return json.loads(value)
-    except Exception:
-        return value
 
 
 def _bool_to_int(value: Any) -> int | None:
@@ -138,6 +134,21 @@ def init_db() -> None:
                 "thoughts_tokens": "INTEGER",
                 "attempts": "INTEGER",
             },
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS route_prompt_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                template_text TEXT NOT NULL,
+                ssal_profile_name TEXT,
+                is_builtin INTEGER NOT NULL DEFAULT 0
+            )
+            """
         )
 
         conn.execute(
@@ -363,6 +374,179 @@ def export_runs_json() -> str:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
     return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
+
+
+
+def list_route_prompt_templates() -> list[dict[str, Any]]:
+    """Return saved route prompt templates.
+
+    The built-in default prompt is currently kept in route_prompts.py rather
+    than seeded into SQLite, so this normally returns only locally saved
+    user-defined templates. The is_builtin column is kept for future migration
+    flexibility.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                name,
+                description,
+                template_text,
+                ssal_profile_name,
+                is_builtin
+            FROM route_prompt_templates
+            ORDER BY is_builtin DESC, updated_at DESC, name ASC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def load_route_prompt_template(template_id: int) -> dict[str, Any] | None:
+    """Load one saved route prompt template by ID."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                name,
+                description,
+                template_text,
+                ssal_profile_name,
+                is_builtin
+            FROM route_prompt_templates
+            WHERE id = ?
+            """,
+            (template_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+def create_route_prompt_template(
+    *,
+    name: str,
+    template_text: str,
+    description: str | None = None,
+    ssal_profile_name: str | None = None,
+    is_builtin: bool = False,
+) -> int:
+    """Create one saved route prompt template and return its ID."""
+    timestamp = _now()
+
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO route_prompt_templates (
+                created_at,
+                updated_at,
+                name,
+                description,
+                template_text,
+                ssal_profile_name,
+                is_builtin
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp,
+                timestamp,
+                name,
+                description,
+                template_text,
+                ssal_profile_name,
+                _bool_to_int(is_builtin) or 0,
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def update_route_prompt_template(
+    *,
+    template_id: int,
+    name: str | None = None,
+    template_text: str | None = None,
+    description: str | None = None,
+    ssal_profile_name: str | None = None,
+) -> None:
+    """Update an existing saved route prompt template.
+
+    Omitted fields are left unchanged. Passing ``description=None`` or
+    ``ssal_profile_name=None`` preserves the current value.
+    """
+    assignments: list[str] = ["updated_at = ?"]
+    values: list[Any] = [_now()]
+
+    if name is not None:
+        assignments.append("name = ?")
+        values.append(name)
+
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description)
+
+    if template_text is not None:
+        assignments.append("template_text = ?")
+        values.append(template_text)
+
+    if ssal_profile_name is not None:
+        assignments.append("ssal_profile_name = ?")
+        values.append(ssal_profile_name)
+
+    values.append(template_id)
+
+    with get_conn() as conn:
+        conn.execute(
+            f"""
+            UPDATE route_prompt_templates
+            SET {", ".join(assignments)}
+            WHERE id = ?
+            """,
+            values,
+        )
+        conn.commit()
+
+
+def duplicate_route_prompt_template(
+    *,
+    template_id: int,
+    name: str,
+) -> int:
+    """Duplicate a saved route prompt template under a new name."""
+    source = load_route_prompt_template(template_id)
+
+    if source is None:
+        raise ValueError(f"Route prompt template not found: {template_id}")
+
+    return create_route_prompt_template(
+        name=name,
+        description=source.get("description"),
+        template_text=source["template_text"],
+        ssal_profile_name=source.get("ssal_profile_name"),
+        is_builtin=False,
+    )
+
+
+def delete_route_prompt_template(template_id: int) -> None:
+    """Delete one saved user-defined route prompt template.
+
+    Built-in templates are protected by the is_builtin flag.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM route_prompt_templates WHERE id = ? AND is_builtin = 0",
+            (template_id,),
+        )
+        conn.commit()
 
 
 def save_route_task(
