@@ -21,6 +21,7 @@ from dashboard.db import (
     save_route_evaluation,
     save_route_task,
     save_run,
+    update_route_prompt_template,
 )
 from dashboard.network import load_route_network_bundle
 from dashboard.route_map_helpers import (
@@ -155,6 +156,22 @@ def _selected_template_option(
             return option
 
     return options[0]
+
+
+def _selected_template_has_unsaved_changes(
+    *,
+    selected_template: dict[str, Any],
+    current_template_text: str,
+    current_template_name: str,
+    current_ssal_profile_name: str,
+) -> bool:
+    """Return whether the editor differs from the selected template option."""
+    return (
+        current_template_text != selected_template["template_text"]
+        or current_template_name != selected_template["name"]
+        or current_ssal_profile_name
+        != (selected_template.get("ssal_profile_name") or DEFAULT_SSAL_PROFILE_NAME)
+    )
 
 
 def render_ground_truth_summary(
@@ -847,8 +864,23 @@ def render_route_finding_view() -> None:
             st.session_state.route_prompt_template = edited_template
             st.rerun()
 
+        selected_template = _selected_template_option(
+            template_options,
+            selected_template_id,
+        )
+        selected_template_description = selected_template.get("description") or ""
+        has_unsaved_changes = _selected_template_has_unsaved_changes(
+            selected_template=selected_template,
+            current_template_text=template,
+            current_template_name=template_name,
+            current_ssal_profile_name=template_ssal_profile_name,
+        )
+
         st.caption(f"Template name: {template_name}")
         st.caption(f"Expected SSAL profile: {template_ssal_profile_name}")
+
+        if has_unsaved_changes:
+            st.warning("The prompt editor has unsaved changes.")
 
         if template_errors:
             st.error("Prompt template validation failed.")
@@ -861,25 +893,51 @@ def render_route_finding_view() -> None:
         else:
             st.success("Prompt template validation passed.")
 
-        with st.expander("Save current template as new", expanded=False):
-            new_template_name = st.text_input("New template name")
-            new_template_description = st.text_area(
-                "Description",
+        with st.expander("Manage prompt template", expanded=False):
+            new_template_name = st.text_input(
+                "New template name",
+                key="route_prompt_new_template_name",
+            )
+            template_description = st.text_area(
+                "Template description",
+                value=selected_template_description,
                 height=100,
                 placeholder="Optional notes about when to use this prompt.",
+                key=f"route_prompt_template_description_{selected_template_id}",
+            )
+            description_changed = (
+                template_description.strip()
+                != selected_template_description.strip()
             )
 
-            save_as_new = st.button(
-                "Save as new prompt template",
-                disabled=bool(template_errors) or not new_template_name.strip(),
-                width="stretch",
-            )
+            if description_changed and not selected_template.get("is_builtin", False):
+                st.warning("The template description has unsaved changes.")
+
+            save_col, update_col = st.columns(2)
+
+            with save_col:
+                save_as_new = st.button(
+                    "Save as new",
+                    disabled=bool(template_errors) or not new_template_name.strip(),
+                    width="stretch",
+                )
+
+            with update_col:
+                update_selected = st.button(
+                    "Update selected",
+                    disabled=(
+                        bool(template_errors)
+                        or selected_template.get("is_builtin", False)
+                        or not (has_unsaved_changes or description_changed)
+                    ),
+                    width="stretch",
+                )
 
             if save_as_new:
                 try:
                     new_template_id = create_route_prompt_template(
                         name=new_template_name.strip(),
-                        description=new_template_description.strip() or None,
+                        description=template_description.strip() or None,
                         template_text=template,
                         ssal_profile_name=template_ssal_profile_name,
                     )
@@ -889,7 +947,30 @@ def render_route_finding_view() -> None:
                     st.success(f"Saved prompt template: {new_template_name.strip()}")
                     st.session_state.route_prompt_template_id = str(new_template_id)
                     st.session_state.route_prompt_template_name = new_template_name.strip()
+                    st.session_state.route_prompt_template = template
+                    st.session_state.route_prompt_ssal_profile_name = (
+                        template_ssal_profile_name
+                    )
                     st.rerun()
+
+            if update_selected:
+                try:
+                    update_route_prompt_template(
+                        template_id=int(selected_template_id),
+                        template_text=template,
+                        description=template_description.strip(),
+                        ssal_profile_name=template_ssal_profile_name,
+                    )
+                except Exception as exc:
+                    st.error(f"Failed to update prompt template: {exc}")
+                else:
+                    st.success(f"Updated prompt template: {template_name}")
+                    st.rerun()
+
+            st.caption(
+                "Update is only available for saved templates. "
+                "Use Save as new to create a variant from the current editor state."
+            )
 
         if st.button("Reset editor to built-in default"):
             st.session_state.route_prompt_template_id = BUILTIN_TEMPLATE_OPTION_ID
