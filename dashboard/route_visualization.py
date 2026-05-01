@@ -44,6 +44,7 @@ class NetworkEdgeLayer:
     color: str = "gray"
     weight: int = 1
     opacity: float = 0.35
+    include_in_bounds: bool = True
 
 
 @dataclass
@@ -53,6 +54,13 @@ class NodeMarker:
     label: str
     color: str = "blue"
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RouteNodeMarkerLayer:
+    nodes: list[NodeMarker]
+    name: str
+    show: bool = False
 
 
 def node_coordinates_from_network_bundle(
@@ -111,6 +119,7 @@ class RouteVisualization:
         self.segment_highlights: list[SegmentHighlight] = []
         self.network_layers: list[NetworkEdgeLayer] = []
         self.node_markers: list[NodeMarker] = []
+        self.route_node_marker_layers: list[RouteNodeMarkerLayer] = []
 
 
     def _add_metadata_overlay(self, route_map: folium.Map) -> None:
@@ -263,6 +272,7 @@ class RouteVisualization:
         color: str = "gray",
         weight: int = 1,
         opacity: float = 0.35,
+        include_in_bounds: bool = True,
     ) -> None:
         """Add a toggleable full-network edge layer.
 
@@ -297,6 +307,7 @@ class RouteVisualization:
                 color=color,
                 weight=weight,
                 opacity=opacity,
+                include_in_bounds=include_in_bounds,
             )
         )
 
@@ -322,6 +333,48 @@ class RouteVisualization:
                 metadata=metadata or {},
             )
         )
+
+
+    def add_route_node_markers(
+        self,
+        *,
+        route: list[str],
+        name: str,
+        color: str = "blue",
+        show: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Add indexed route-node markers as a separate toggleable layer."""
+        markers: list[NodeMarker] = []
+        base_metadata = metadata or {}
+
+        for index, node_id in enumerate(route):
+            node_id = str(node_id)
+
+            if node_id not in self.node_coordinates:
+                continue
+
+            markers.append(
+                NodeMarker(
+                    node_id=node_id,
+                    coordinate=self.node_coordinates[node_id],
+                    label=f"{name} node #{index}",
+                    color=color,
+                    metadata={
+                        "index": index,
+                        **base_metadata,
+                    },
+                )
+            )
+
+        if markers:
+            self.route_node_marker_layers.append(
+                RouteNodeMarkerLayer(
+                    nodes=markers,
+                    name=name,
+                    show=show,
+                )
+            )
 
 
     def _resolve_partial_segment_coordinates(
@@ -404,11 +457,18 @@ class RouteVisualization:
             points.update(highlight.coordinates)
 
         for network_layer in self.network_layers:
+            if not network_layer.include_in_bounds:
+                continue
+
             for _, _, coordinates, _ in network_layer.edges:
                 points.update(coordinates)
 
         for marker in self.node_markers:
             points.add(marker.coordinate)
+
+        for marker_layer in self.route_node_marker_layers:
+            for marker in marker_layer.nodes:
+                points.add(marker.coordinate)
 
         if not points and self.node_coordinates:
             points.update(self.node_coordinates.values())
@@ -615,6 +675,40 @@ class RouteVisualization:
         marker_group.add_to(route_map)
 
 
+    def _add_route_node_marker_layers(self, route_map: folium.Map) -> None:
+        """Add indexed route-node markers as toggleable map layers."""
+        for marker_layer in self.route_node_marker_layers:
+            if not marker_layer.nodes:
+                continue
+
+            feature_group = folium.FeatureGroup(
+                name=marker_layer.name,
+                show=marker_layer.show,
+            )
+
+            for marker in marker_layer.nodes:
+                lon, lat = marker.coordinate
+                tooltip_html = self._format_metadata_html(
+                    {
+                        "node_id": marker.node_id,
+                        **marker.metadata,
+                    },
+                    marker.label,
+                )
+
+                folium.CircleMarker(
+                    location=(lat, lon),
+                    radius=4,
+                    color=marker.color,
+                    fill=True,
+                    fill_color=marker.color,
+                    fill_opacity=0.75,
+                    tooltip=folium.Tooltip(tooltip_html),
+                ).add_to(feature_group)
+
+            feature_group.add_to(route_map)
+
+
     def render(self, save_path: str | None = None) -> folium.Map:
         """Render the map with added route layers and segment highlights."""
         all_lats, all_lons = self._map_bounds_points()
@@ -636,6 +730,7 @@ class RouteVisualization:
         self._add_metadata_overlay(route_map)
         self._add_network_layers(route_map)
         self._add_node_marker_layer(route_map)
+        self._add_route_node_marker_layers(route_map)
 
         for index, layer in enumerate(self.routes, start=1):
             label = layer.metadata.get("label", f"Route {index}")

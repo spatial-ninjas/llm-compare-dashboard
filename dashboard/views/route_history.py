@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import html
 import json
 from pathlib import Path
@@ -19,6 +18,7 @@ from dashboard.route_visualization import (
 from dashboard.route_map_helpers import (
     add_segment_highlights_to_map,
     build_segment_rows_from_evaluation,
+    network_edges_from_bundle,
     parse_json_object,
     parse_path,
     render_highlight_summary,
@@ -355,6 +355,29 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
         },
     )
 
+    viz.add_network_layer(
+        edges=network_edges_from_bundle(bundle),
+        name="Full network",
+        color="gray",
+        weight=1,
+        opacity=0.2,
+        include_in_bounds=False,
+    )
+
+    viz.add_node_marker(
+        node_id=str(origin),
+        label="Selected origin",
+        color="green",
+        metadata={"role": "origin"},
+    )
+
+    viz.add_node_marker(
+        node_id=str(destination),
+        label="Selected destination",
+        color="red",
+        metadata={"role": "destination"},
+    )
+
     viz.add_route(
         route=candidate_path,
         ground_truth=ground_truth_path,
@@ -369,12 +392,36 @@ def _render_selected_route_map(selected_row: dict[str, Any]) -> None:
         ground_truth_color="green",
     )
 
+    viz.add_route_node_markers(
+        route=candidate_path,
+        name=f"{provider} route nodes",
+        color=provider_color,
+        show=False,
+        metadata={
+            "route_type": "candidate",
+            "provider": provider,
+            "model": model,
+            "evaluation_id": evaluation_id,
+        },
+    )
+
+    viz.add_route_node_markers(
+        route=ground_truth_path,
+        name="Ground truth route nodes",
+        color="green",
+        show=False,
+        metadata={
+            "route_type": "ground_truth",
+            "evaluation_id": evaluation_id,
+        },
+    )
+
     highlight_count = add_segment_highlights_to_map(
         viz=viz,
         segment_rows=segment_rows,
     )
     render_highlight_summary(highlight_count)
-    
+
     output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
     output_dir.mkdir(parents=True, exist_ok=True)
 

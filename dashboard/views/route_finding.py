@@ -319,6 +319,7 @@ def render_route_map_preview(
         color="gray",
         weight=1,
         opacity=0.25,
+        include_in_bounds=True,
     )
 
     viz.add_node_marker(
@@ -344,6 +345,16 @@ def render_route_map_preview(
             "edges": max(len(ground_truth_path) - 1, 0),
         },
         color="green",
+    )
+
+    viz.add_route_node_markers(
+        route=ground_truth_path,
+        name="Dijkstra reference nodes",
+        color="green",
+        show=False,
+        metadata={
+            "route_type": "ground_truth",
+        },
     )
 
     output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
@@ -412,6 +423,7 @@ def render_provider_route_map(
         color="gray",
         weight=1,
         opacity=0.2,
+        include_in_bounds=False,
     )
 
     viz.add_node_marker(
@@ -439,6 +451,28 @@ def render_provider_route_map(
         },
         color=provider_color,
         ground_truth_color="green",
+    )
+
+    viz.add_route_node_markers(
+        route=candidate_path,
+        name=f"{provider} route nodes",
+        color=provider_color,
+        show=False,
+        metadata={
+            "route_type": "candidate",
+            "provider": provider,
+            "model": model,
+        },
+    )
+
+    viz.add_route_node_markers(
+        route=ground_truth_path,
+        name="Ground truth route nodes",
+        color="green",
+        show=False,
+        metadata={
+            "route_type": "ground_truth",
+        },
     )
 
     candidate_validation = evaluation.get("candidate_validation") or {}
