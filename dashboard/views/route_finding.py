@@ -16,6 +16,8 @@ from research.graph import dijkstra_shortest_path
 
 from dashboard.api_clients import call_gemini, call_openai
 from dashboard.db import (
+    create_route_prompt_template,
+    list_route_prompt_templates,
     save_route_evaluation,
     save_route_task,
     save_run,
@@ -102,6 +104,57 @@ def _metric_cell(label: str, value: Any) -> str:
         </div>
     </div>
     """
+
+
+BUILTIN_TEMPLATE_OPTION_ID = "builtin"
+
+
+def _load_route_prompt_template_options() -> list[dict[str, Any]]:
+    """Return built-in and saved route prompt template options."""
+    options = [
+        {
+            "id": BUILTIN_TEMPLATE_OPTION_ID,
+            "name": DEFAULT_ROUTE_PROMPT_TEMPLATE_NAME,
+            "description": "Built-in default template bundled with the dashboard.",
+            "template_text": DEFAULT_ROUTE_PROMPT_TEMPLATE,
+            "ssal_profile_name": DEFAULT_SSAL_PROFILE_NAME,
+            "is_builtin": True,
+        }
+    ]
+
+    for template in list_route_prompt_templates():
+        options.append(
+            {
+                "id": str(template["id"]),
+                "name": template["name"],
+                "description": template.get("description"),
+                "template_text": template["template_text"],
+                "ssal_profile_name": template.get("ssal_profile_name"),
+                "is_builtin": bool(template.get("is_builtin")),
+            }
+        )
+
+    return options
+
+
+def _template_option_label(option: dict[str, Any]) -> str:
+    """Return a compact label for the prompt template selector."""
+    if option.get("is_builtin"):
+        return f"{option['name']} · built-in"
+
+    return str(option["name"])
+
+
+def _selected_template_option(
+    options: list[dict[str, Any]],
+    selected_id: str,
+) -> dict[str, Any]:
+    """Return selected template option, falling back to built-in default."""
+    for option in options:
+        if str(option["id"]) == str(selected_id):
+            return option
+
+    return options[0]
 
 
 def render_ground_truth_summary(
@@ -703,10 +756,32 @@ def render_route_finding_view() -> None:
             language="json",
         )
 
-    template = st.session_state.get(
-        "route_prompt_template",
-        DEFAULT_ROUTE_PROMPT_TEMPLATE,
+    template_options = _load_route_prompt_template_options()
+
+    selected_template_id = st.session_state.get(
+        "route_prompt_template_id",
+        BUILTIN_TEMPLATE_OPTION_ID,
     )
+
+    selected_template = _selected_template_option(
+        template_options,
+        selected_template_id,
+    )
+
+    if "route_prompt_template" not in st.session_state:
+        st.session_state.route_prompt_template = selected_template["template_text"]
+
+    if "route_prompt_template_name" not in st.session_state:
+        st.session_state.route_prompt_template_name = selected_template["name"]
+
+    if "route_prompt_ssal_profile_name" not in st.session_state:
+        st.session_state.route_prompt_ssal_profile_name = (
+            selected_template.get("ssal_profile_name") or DEFAULT_SSAL_PROFILE_NAME
+        )
+
+    template = st.session_state.route_prompt_template
+    template_name = st.session_state.route_prompt_template_name
+    template_ssal_profile_name = st.session_state.route_prompt_ssal_profile_name
 
     template_errors = validate_route_prompt_template(template)
     prompt = ""
@@ -729,6 +804,35 @@ def render_route_finding_view() -> None:
 
         st.subheader("Prompt template")
 
+        selected_option_id = st.selectbox(
+            "Saved prompt template",
+            options=[str(option["id"]) for option in template_options],
+            index=next(
+                (
+                    index
+                    for index, option in enumerate(template_options)
+                    if str(option["id"]) == str(selected_template_id)
+                ),
+                0,
+            ),
+            format_func=lambda option_id: _template_option_label(
+                _selected_template_option(template_options, option_id)
+            ),
+        )
+
+        if selected_option_id != selected_template_id:
+            selected_template = _selected_template_option(
+                template_options,
+                selected_option_id,
+            )
+            st.session_state.route_prompt_template_id = selected_option_id
+            st.session_state.route_prompt_template = selected_template["template_text"]
+            st.session_state.route_prompt_template_name = selected_template["name"]
+            st.session_state.route_prompt_ssal_profile_name = (
+                selected_template.get("ssal_profile_name") or DEFAULT_SSAL_PROFILE_NAME
+            )
+            st.rerun()
+
         edited_template = st.text_area(
             "Route prompt template",
             value=template,
@@ -743,6 +847,9 @@ def render_route_finding_view() -> None:
             st.session_state.route_prompt_template = edited_template
             st.rerun()
 
+        st.caption(f"Template name: {template_name}")
+        st.caption(f"Expected SSAL profile: {template_ssal_profile_name}")
+
         if template_errors:
             st.error("Prompt template validation failed.")
             for error in template_errors:
@@ -753,6 +860,43 @@ def render_route_finding_view() -> None:
             )
         else:
             st.success("Prompt template validation passed.")
+
+        with st.expander("Save current template as new", expanded=False):
+            new_template_name = st.text_input("New template name")
+            new_template_description = st.text_area(
+                "Description",
+                height=100,
+                placeholder="Optional notes about when to use this prompt.",
+            )
+
+            save_as_new = st.button(
+                "Save as new prompt template",
+                disabled=bool(template_errors) or not new_template_name.strip(),
+                width="stretch",
+            )
+
+            if save_as_new:
+                try:
+                    new_template_id = create_route_prompt_template(
+                        name=new_template_name.strip(),
+                        description=new_template_description.strip() or None,
+                        template_text=template,
+                        ssal_profile_name=template_ssal_profile_name,
+                    )
+                except Exception as exc:
+                    st.error(f"Failed to save prompt template: {exc}")
+                else:
+                    st.success(f"Saved prompt template: {new_template_name.strip()}")
+                    st.session_state.route_prompt_template_id = str(new_template_id)
+                    st.session_state.route_prompt_template_name = new_template_name.strip()
+                    st.rerun()
+
+        if st.button("Reset editor to built-in default"):
+            st.session_state.route_prompt_template_id = BUILTIN_TEMPLATE_OPTION_ID
+            st.session_state.route_prompt_template = DEFAULT_ROUTE_PROMPT_TEMPLATE
+            st.session_state.route_prompt_template_name = DEFAULT_ROUTE_PROMPT_TEMPLATE_NAME
+            st.session_state.route_prompt_ssal_profile_name = DEFAULT_SSAL_PROFILE_NAME
+            st.rerun()
 
         st.subheader("Generated prompt")
 
@@ -804,8 +948,8 @@ def render_route_finding_view() -> None:
             destination=destination,
             ssal_hash=bundle.ssal_hash,
             prompt_template=template,
-            prompt_template_name=DEFAULT_ROUTE_PROMPT_TEMPLATE_NAME,
-            ssal_profile_name=DEFAULT_SSAL_PROFILE_NAME,
+            prompt_template_name=template_name,
+            ssal_profile_name=template_ssal_profile_name,
             ground_truth_path=ground_truth_path,
             ground_truth_length=ground_truth_length,
         )
@@ -931,8 +1075,8 @@ def render_route_finding_view() -> None:
             origin=origin,
             destination=destination,
             ssal_hash=bundle.ssal_hash,
-            prompt_template_name=DEFAULT_ROUTE_PROMPT_TEMPLATE_NAME,
-            ssal_profile_name=DEFAULT_SSAL_PROFILE_NAME,
+            prompt_template_name=template_name,
+            ssal_profile_name=template_ssal_profile_name,
             openai_run_id=openai_run_id,
             gemini_run_id=gemini_run_id,
             openai_result=openai_result,
