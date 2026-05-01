@@ -716,62 +716,78 @@ def render_route_finding_view() -> None:
         st.write(f"SSAL hash: `{bundle.ssal_hash[:12]}`")
         st.write(f"Nodes: `{len(nodes)}`")
 
-    col1, col2 = st.columns(2)
+    main_col, prompt_col = st.columns([1.55, 1.0], gap="large")
 
-    with col1:
-        origin = st.selectbox(
-            "Origin node",
-            nodes,
-            index=_node_default_index(
+    with main_col:
+        st.subheader("Route task")
+
+        route_col1, route_col2 = st.columns(2)
+
+        with route_col1:
+            origin = st.selectbox(
+                "Origin node",
                 nodes,
-                preferred_node=DEFAULT_ORIGIN_NODE,
-                fallback_index=0,
-            ),
-        )
+                index=_node_default_index(
+                    nodes,
+                    preferred_node=DEFAULT_ORIGIN_NODE,
+                    fallback_index=0,
+                ),
+            )
 
-    with col2:
-        destination = st.selectbox(
-            "Destination node",
-            nodes,
-            index=_node_default_index(
+        with route_col2:
+            destination = st.selectbox(
+                "Destination node",
                 nodes,
-                preferred_node=DEFAULT_DESTINATION_NODE,
-                fallback_index=1,
-            ),
+                index=_node_default_index(
+                    nodes,
+                    preferred_node=DEFAULT_DESTINATION_NODE,
+                    fallback_index=1,
+                ),
+            )
+
+        if origin == destination:
+            st.warning("Origin and destination should be different.")
+            return
+
+        ground_truth = dijkstra_shortest_path(bundle.graph, origin, destination)
+
+        if not ground_truth.get("ok"):
+            st.error(f"No Dijkstra path found: {ground_truth.get('reason')}")
+            return
+
+        ground_truth_length = _ground_truth_length(ground_truth)
+        ground_truth_path = [str(node) for node in ground_truth["path"]]
+
+        render_ground_truth_summary(
+            origin=origin,
+            destination=destination,
+            ground_truth_path=ground_truth_path,
+            ground_truth_length=ground_truth_length,
         )
 
-    if origin == destination:
-        st.warning("Origin and destination should be different.")
-        return
-
-    ground_truth = dijkstra_shortest_path(bundle.graph, origin, destination)
-
-    if not ground_truth.get("ok"):
-        st.error(f"No Dijkstra path found: {ground_truth.get('reason')}")
-        return
-
-    ground_truth_length = _ground_truth_length(ground_truth)
-    ground_truth_path = [str(node) for node in ground_truth["path"]]
-
-    render_ground_truth_summary(
-        origin=origin,
-        destination=destination,
-        ground_truth_path=ground_truth_path,
-        ground_truth_length=ground_truth_length,
-    )
-
-    render_route_map_preview(
-        bundle=bundle,
-        origin=origin,
-        destination=destination,
-        ground_truth_path=ground_truth_path,
-    )
-
-    with st.expander("Ground-truth path"):
-        st.code(
-            json.dumps(ground_truth_path, indent=2, ensure_ascii=False),
-            language="json",
+        render_route_map_preview(
+            bundle=bundle,
+            origin=origin,
+            destination=destination,
+            ground_truth_path=ground_truth_path,
         )
+
+        with st.expander("Ground-truth path"):
+            st.code(
+                json.dumps(ground_truth_path, indent=2, ensure_ascii=False),
+                language="json",
+            )
+
+        with st.expander("Network debug details", expanded=False):
+            st.write(f"GeoPackage: `{bundle.gpkg_path}`")
+            st.write(f"Edges layer: `{bundle.edges_layer}`")
+            st.write(f"Nodes layer: `{bundle.nodes_layer}`")
+            st.write(f"SSAL hash: `{bundle.ssal_hash}`")
+            st.write(f"Node count: `{len(nodes)}`")
+
+            st.subheader("SSAL preview")
+            preview = "\n".join(bundle.ssal_text.splitlines()[:40])
+            st.code(preview, language="text")
 
     template_options = _load_route_prompt_template_options()
 
@@ -814,12 +830,13 @@ def render_route_finding_view() -> None:
         except ValueError as exc:
             template_errors = [str(exc)]
 
-    with st.expander("Debug / prompt and network details", expanded=False):
-        st.subheader("SSAL profile")
-        st.write(f"Profile: `{DEFAULT_SSAL_PROFILE_NAME}`")
-        st.code(DEFAULT_SSAL_SCHEMA_DESCRIPTION, language="text")
-
+    with prompt_col:
         st.subheader("Prompt template")
+
+        st.caption(f"Current SSAL profile: `{DEFAULT_SSAL_PROFILE_NAME}`")
+
+        with st.expander("SSAL schema", expanded=False):
+            st.code(DEFAULT_SSAL_SCHEMA_DESCRIPTION, language="text")
 
         selected_option_id = st.selectbox(
             "Saved prompt template",
@@ -853,7 +870,7 @@ def render_route_finding_view() -> None:
         edited_template = st.text_area(
             "Route prompt template",
             value=template,
-            height=360,
+            height=520,
             help=(
                 "Available placeholders: {origin}, {destination}, {ssal_text}. "
                 "Escape literal JSON braces as {{ and }}."
@@ -989,7 +1006,7 @@ def render_route_finding_view() -> None:
             st.text_area(
                 "Generated route prompt",
                 value=prompt,
-                height=420,
+                height=360,
             )
 
             st.download_button(
@@ -1000,206 +1017,196 @@ def render_route_finding_view() -> None:
                 width="stretch",
             )
 
-        st.subheader("Network")
-        st.write(f"GeoPackage: `{bundle.gpkg_path}`")
-        st.write(f"Edges layer: `{bundle.edges_layer}`")
-        st.write(f"Nodes layer: `{bundle.nodes_layer}`")
-        st.write(f"SSAL hash: `{bundle.ssal_hash}`")
-        st.write(f"Node count: `{len(nodes)}`")
-
-        st.subheader("SSAL preview")
-        preview = "\n".join(bundle.ssal_text.splitlines()[:40])
-        st.code(preview, language="text")
-
-    run_button = st.button(
-        "Run route test",
-        type="primary",
-        width="stretch",
-        disabled=bool(template_errors),
-    )
-
-    if not run_button:
-        return
-
-    with st.status("Running route test...", expanded=True) as status:
-        st.write("Saving route task...")
-
-        task_id = save_route_task(
-            origin=origin,
-            destination=destination,
-            ssal_hash=bundle.ssal_hash,
-            prompt_template=template,
-            prompt_template_name=template_name,
-            ssal_profile_name=template_ssal_profile_name,
-            ground_truth_path=ground_truth_path,
-            ground_truth_length=ground_truth_length,
+    with main_col:
+        run_button = st.button(
+            "Run route test",
+            type="primary",
+            width="stretch",
+            disabled=bool(template_errors),
         )
 
-        st.write("Calling OpenAI and Gemini in parallel...")
+        if not run_button:
+            return
 
-        provider_futures = {}
+        with st.status("Running route test...", expanded=True) as status:
+            st.write("Saving route task...")
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            provider_futures[
-                executor.submit(
-                    call_openai,
-                    prompt=prompt,
-                    model=openai_model,
-                    max_output_tokens=max_output_tokens,
-                )
-            ] = "OpenAI"
-
-            provider_futures[
-                executor.submit(
-                    call_gemini,
-                    prompt=prompt,
-                    model=gemini_model,
-                    max_output_tokens=max_output_tokens,
-                    thinking_mode=gemini_thinking_mode,
-                    custom_thinking_budget=gemini_custom_thinking_budget,
-                )
-            ] = "Gemini"
-
-            results: dict[str, dict[str, Any]] = {}
-
-            for future in as_completed(provider_futures):
-                provider = provider_futures[future]
-
-                try:
-                    results[provider] = future.result()
-                except Exception as exc:
-                    fallback_model = (
-                        openai_model if provider == "OpenAI" else gemini_model
-                    )
-                    results[provider] = {
-                        "ok": False,
-                        "provider": provider,
-                        "text": "",
-                        "error": str(exc),
-                        "metadata": {
-                            "model": fallback_model,
-                            "attempts": None,
-                            "max_output_tokens": max_output_tokens,
-                        },
-                        "raw": None,
-                    }
-
-                st.write(
-                    _provider_status_message(
-                        provider=provider,
-                        api_result=results[provider],
-                    )
-                )
-
-        openai_result = results["OpenAI"]
-        gemini_result = results["Gemini"]
-
-        st.write("Saving provider runs...")
-        openai_run_id = save_run(prompt, openai_result)
-        gemini_run_id = save_run(prompt, gemini_result)
-
-        st.write("Evaluating OpenAI route...")
-        if openai_result.get("ok"):
-            openai_evaluation = evaluate_route_response(
-                response_text=_get_response_text(openai_result),
-                graph=bundle.graph,
+            task_id = save_route_task(
                 origin=origin,
                 destination=destination,
+                ssal_hash=bundle.ssal_hash,
+                prompt_template=template,
+                prompt_template_name=template_name,
+                ssal_profile_name=template_ssal_profile_name,
+                ground_truth_path=ground_truth_path,
+                ground_truth_length=ground_truth_length,
             )
-        else:
-            openai_evaluation = _provider_error_evaluation(openai_result)
 
-        st.write("Evaluating Gemini route...")
-        if gemini_result.get("ok"):
-            gemini_evaluation = evaluate_route_response(
-                response_text=_get_response_text(gemini_result),
-                graph=bundle.graph,
-                origin=origin,
-                destination=destination,
+            st.write("Calling OpenAI and Gemini in parallel...")
+
+            provider_futures = {}
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                provider_futures[
+                    executor.submit(
+                        call_openai,
+                        prompt=prompt,
+                        model=openai_model,
+                        max_output_tokens=max_output_tokens,
+                    )
+                ] = "OpenAI"
+
+                provider_futures[
+                    executor.submit(
+                        call_gemini,
+                        prompt=prompt,
+                        model=gemini_model,
+                        max_output_tokens=max_output_tokens,
+                        thinking_mode=gemini_thinking_mode,
+                        custom_thinking_budget=gemini_custom_thinking_budget,
+                    )
+                ] = "Gemini"
+
+                results: dict[str, dict[str, Any]] = {}
+
+                for future in as_completed(provider_futures):
+                    provider = provider_futures[future]
+
+                    try:
+                        results[provider] = future.result()
+                    except Exception as exc:
+                        fallback_model = (
+                            openai_model if provider == "OpenAI" else gemini_model
+                        )
+                        results[provider] = {
+                            "ok": False,
+                            "provider": provider,
+                            "text": "",
+                            "error": str(exc),
+                            "metadata": {
+                                "model": fallback_model,
+                                "attempts": None,
+                                "max_output_tokens": max_output_tokens,
+                            },
+                            "raw": None,
+                        }
+
+                    st.write(
+                        _provider_status_message(
+                            provider=provider,
+                            api_result=results[provider],
+                        )
+                    )
+
+            openai_result = results["OpenAI"]
+            gemini_result = results["Gemini"]
+
+            st.write("Saving provider runs...")
+            openai_run_id = save_run(prompt, openai_result)
+            gemini_run_id = save_run(prompt, gemini_result)
+
+            st.write("Evaluating OpenAI route...")
+            if openai_result.get("ok"):
+                openai_evaluation = evaluate_route_response(
+                    response_text=_get_response_text(openai_result),
+                    graph=bundle.graph,
+                    origin=origin,
+                    destination=destination,
+                )
+            else:
+                openai_evaluation = _provider_error_evaluation(openai_result)
+
+            st.write("Evaluating Gemini route...")
+            if gemini_result.get("ok"):
+                gemini_evaluation = evaluate_route_response(
+                    response_text=_get_response_text(gemini_result),
+                    graph=bundle.graph,
+                    origin=origin,
+                    destination=destination,
+                )
+            else:
+                gemini_evaluation = _provider_error_evaluation(gemini_result)
+
+            st.write("Saving route evaluations...")
+            save_route_evaluation(
+                task_id=task_id,
+                run_id=openai_run_id,
+                provider="OpenAI",
+                model=_get_result_model(openai_result, openai_model),
+                evaluation=openai_evaluation,
             )
-        else:
-            gemini_evaluation = _provider_error_evaluation(gemini_result)
 
-        st.write("Saving route evaluations...")
-        save_route_evaluation(
+            save_route_evaluation(
+                task_id=task_id,
+                run_id=gemini_run_id,
+                provider="Gemini",
+                model=_get_result_model(gemini_result, gemini_model),
+                evaluation=gemini_evaluation,
+            )
+
+            status.update(
+                label="Route test completed.",
+                state="complete",
+                expanded=False,
+            )
+
+        render_save_summary(
             task_id=task_id,
-            run_id=openai_run_id,
-            provider="OpenAI",
-            model=_get_result_model(openai_result, openai_model),
-            evaluation=openai_evaluation,
-        )
-
-        save_route_evaluation(
-            task_id=task_id,
-            run_id=gemini_run_id,
-            provider="Gemini",
-            model=_get_result_model(gemini_result, gemini_model),
-            evaluation=gemini_evaluation,
-        )
-
-        status.update(
-            label="Route test completed.",
-            state="complete",
-            expanded=False,
-        )
-
-    render_save_summary(
-        task_id=task_id,
-        openai_run_id=openai_run_id,
-        gemini_run_id=gemini_run_id,
-    )
-
-    st.download_button(
-        "Download this route test as JSON",
-        data=_evaluation_download_payload(
-            task_id=task_id,
-            origin=origin,
-            destination=destination,
-            ssal_hash=bundle.ssal_hash,
-            prompt_template_name=template_name,
-            ssal_profile_name=template_ssal_profile_name,
             openai_run_id=openai_run_id,
             gemini_run_id=gemini_run_id,
-            openai_result=openai_result,
-            gemini_result=gemini_result,
-            openai_evaluation=openai_evaluation,
-            gemini_evaluation=gemini_evaluation,
-        ),
-        file_name=f"route_evaluation_{origin}_to_{destination}.json",
-        mime="application/json",
-        width="stretch",
-    )
-
-    result_col1, result_col2 = st.columns(2)
-
-    with result_col1:
-        render_route_eval_card(
-            title="OpenAI",
-            api_result=openai_result,
-            evaluation=openai_evaluation,
-        )
-        render_provider_route_map(
-            bundle=bundle,
-            provider="OpenAI",
-            model=_get_result_model(openai_result, openai_model),
-            origin=origin,
-            destination=destination,
-            ground_truth_path=ground_truth_path,
-            evaluation=openai_evaluation,
         )
 
-    with result_col2:
-        render_route_eval_card(
-            title="Gemini",
-            api_result=gemini_result,
-            evaluation=gemini_evaluation,
+        st.download_button(
+            "Download this route test as JSON",
+            data=_evaluation_download_payload(
+                task_id=task_id,
+                origin=origin,
+                destination=destination,
+                ssal_hash=bundle.ssal_hash,
+                prompt_template_name=template_name,
+                ssal_profile_name=template_ssal_profile_name,
+                openai_run_id=openai_run_id,
+                gemini_run_id=gemini_run_id,
+                openai_result=openai_result,
+                gemini_result=gemini_result,
+                openai_evaluation=openai_evaluation,
+                gemini_evaluation=gemini_evaluation,
+            ),
+            file_name=f"route_evaluation_{origin}_to_{destination}.json",
+            mime="application/json",
+            width="stretch",
         )
-        render_provider_route_map(
-            bundle=bundle,
-            provider="Gemini",
-            model=_get_result_model(gemini_result, gemini_model),
-            origin=origin,
-            destination=destination,
-            ground_truth_path=ground_truth_path,
-            evaluation=gemini_evaluation,
-        )
+
+        result_col1, result_col2 = st.columns(2)
+
+        with result_col1:
+            render_route_eval_card(
+                title="OpenAI",
+                api_result=openai_result,
+                evaluation=openai_evaluation,
+            )
+            render_provider_route_map(
+                bundle=bundle,
+                provider="OpenAI",
+                model=_get_result_model(openai_result, openai_model),
+                origin=origin,
+                destination=destination,
+                ground_truth_path=ground_truth_path,
+                evaluation=openai_evaluation,
+            )
+
+        with result_col2:
+            render_route_eval_card(
+                title="Gemini",
+                api_result=gemini_result,
+                evaluation=gemini_evaluation,
+            )
+            render_provider_route_map(
+                bundle=bundle,
+                provider="Gemini",
+                model=_get_result_model(gemini_result, gemini_model),
+                origin=origin,
+                destination=destination,
+                ground_truth_path=ground_truth_path,
+                evaluation=gemini_evaluation,
+            )
