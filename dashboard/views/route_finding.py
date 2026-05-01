@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import html
 import json
 from pathlib import Path
 import tempfile
@@ -23,6 +24,7 @@ from dashboard.network import load_route_network_bundle
 from dashboard.route_map_helpers import (
     add_segment_highlights_to_map,
     build_segment_rows_from_evaluation,
+    network_edges_from_bundle,
     render_highlight_summary,
     render_map_html_file,
     safe_map_token,
@@ -38,7 +40,7 @@ from dashboard.route_visualization import (
 
 
 DEFAULT_ORIGIN_NODE = "1004552350"
-DEFAULT_DESTINATION_NODE = "12143305053"
+DEFAULT_DESTINATION_NODE = "9713069615"
 
 
 def _format_metric(value: Any, digits: int = 3) -> str:
@@ -59,6 +61,75 @@ def _format_bool(value: Any) -> str:
     if value is False:
         return "⚠️ No"
     return "—"
+
+
+
+def _format_metric_value(value: Any, digits: int = 3) -> str:
+    """Format optional numeric metric values for compact display."""
+    if value is None or pd.isna(value):
+        return "—"
+
+    if isinstance(value, (int, float)):
+        return f"{value:.{digits}f}"
+
+    return str(value)
+
+
+def _metric_cell(label: str, value: Any) -> str:
+    """Return compact HTML for one route metric cell."""
+    escaped_label = html.escape(str(label))
+    escaped_value = html.escape(str(value))
+
+    return f"""
+    <div style="padding: 0.35rem 0 0.2rem 0;">
+        <div style="
+            font-size: 0.85rem;
+            color: #6b7280;
+            margin-bottom: 0.15rem;
+        ">
+            {escaped_label}
+        </div>
+        <div style="
+            font-size: 1.25rem;
+            font-weight: 600;
+            line-height: 1.2;
+        ">
+            {escaped_value}
+        </div>
+    </div>
+    """
+
+
+def render_ground_truth_summary(
+    *,
+    origin: str,
+    destination: str,
+    ground_truth_path: list[str],
+    ground_truth_length: float | None,
+) -> None:
+    """Render a compact summary card for the selected reference route."""
+    ground_truth_edges = max(len(ground_truth_path) - 1, 0)
+
+    with st.container(border=True):
+        st.markdown("**Selected reference route**")
+        st.markdown(f"Route: `{origin}` → `{destination}`")
+
+        metric_col1, metric_col2 = st.columns(2)
+
+        with metric_col1:
+            st.markdown(
+                _metric_cell(
+                    "Ground-truth length",
+                    _format_metric_value(ground_truth_length, digits=1),
+                ),
+                unsafe_allow_html=True,
+            )
+
+        with metric_col2:
+            st.markdown(
+                _metric_cell("Ground-truth edges", str(ground_truth_edges)),
+                unsafe_allow_html=True,
+            )
 
 
 def _node_default_index(
@@ -242,15 +313,48 @@ def render_route_map_preview(
         },
     )
 
+    viz.add_network_layer(
+        edges=network_edges_from_bundle(bundle),
+        name="Full network",
+        color="gray",
+        weight=1,
+        opacity=0.25,
+        include_in_bounds=True,
+    )
+
+    viz.add_node_marker(
+        node_id=str(origin),
+        label="Selected origin",
+        color="green",
+        metadata={"role": "origin"},
+    )
+
+    viz.add_node_marker(
+        node_id=str(destination),
+        label="Selected destination",
+        color="red",
+        metadata={"role": "destination"},
+    )
+
     viz.add_route(
         route=ground_truth_path,
         metadata={
-            "label": "Dijkstra reference route",
+            "label": "Dijkstra reference",
             "origin": origin,
             "destination": destination,
-            "source": "research.graph.dijkstra_shortest_path",
+            "edges": max(len(ground_truth_path) - 1, 0),
         },
         color="green",
+    )
+
+    viz.add_route_node_markers(
+        route=ground_truth_path,
+        name="Dijkstra reference nodes",
+        color="green",
+        show=False,
+        metadata={
+            "route_type": "ground_truth",
+        },
     )
 
     output_dir = Path(tempfile.gettempdir()) / "llm_compare_dashboard_maps"
@@ -313,6 +417,29 @@ def render_provider_route_map(
         },
     )
 
+    viz.add_network_layer(
+        edges=network_edges_from_bundle(bundle),
+        name="Full network",
+        color="gray",
+        weight=1,
+        opacity=0.2,
+        include_in_bounds=False,
+    )
+
+    viz.add_node_marker(
+        node_id=str(origin),
+        label="Selected origin",
+        color="green",
+        metadata={"role": "origin"},
+    )
+
+    viz.add_node_marker(
+        node_id=str(destination),
+        label="Selected destination",
+        color="red",
+        metadata={"role": "destination"},
+    )
+
     viz.add_route(
         route=candidate_path,
         ground_truth=ground_truth_path,
@@ -324,6 +451,28 @@ def render_provider_route_map(
         },
         color=provider_color,
         ground_truth_color="green",
+    )
+
+    viz.add_route_node_markers(
+        route=candidate_path,
+        name=f"{provider} route nodes",
+        color=provider_color,
+        show=False,
+        metadata={
+            "route_type": "candidate",
+            "provider": provider,
+            "model": model,
+        },
+    )
+
+    viz.add_route_node_markers(
+        route=ground_truth_path,
+        name="Ground truth route nodes",
+        color="green",
+        show=False,
+        metadata={
+            "route_type": "ground_truth",
+        },
     )
 
     candidate_validation = evaluation.get("candidate_validation") or {}
@@ -524,19 +673,25 @@ def render_route_finding_view() -> None:
         return
 
     ground_truth_length = _ground_truth_length(ground_truth)
+    ground_truth_path = [str(node) for node in ground_truth["path"]]
 
-    st.write(f"Ground-truth length: `{_format_metric(ground_truth_length, digits=1)}`")
+    render_ground_truth_summary(
+        origin=origin,
+        destination=destination,
+        ground_truth_path=ground_truth_path,
+        ground_truth_length=ground_truth_length,
+    )
 
     render_route_map_preview(
         bundle=bundle,
         origin=origin,
         destination=destination,
-        ground_truth_path=ground_truth["path"],
+        ground_truth_path=ground_truth_path,
     )
 
     with st.expander("Ground-truth path"):
         st.code(
-            json.dumps(ground_truth["path"], indent=2, ensure_ascii=False),
+            json.dumps(ground_truth_path, indent=2, ensure_ascii=False),
             language="json",
         )
 
@@ -622,7 +777,7 @@ def render_route_finding_view() -> None:
             destination=destination,
             ssal_hash=bundle.ssal_hash,
             prompt_template=template,
-            ground_truth_path=ground_truth["path"],
+            ground_truth_path=ground_truth_path,
             ground_truth_length=ground_truth_length,
         )
 
@@ -773,7 +928,7 @@ def render_route_finding_view() -> None:
             model=_get_result_model(openai_result, openai_model),
             origin=origin,
             destination=destination,
-            ground_truth_path=ground_truth["path"],
+            ground_truth_path=ground_truth_path,
             evaluation=openai_evaluation,
         )
 
@@ -789,6 +944,6 @@ def render_route_finding_view() -> None:
             model=_get_result_model(gemini_result, gemini_model),
             origin=origin,
             destination=destination,
-            ground_truth_path=ground_truth["path"],
+            ground_truth_path=ground_truth_path,
             evaluation=gemini_evaluation,
         )

@@ -37,6 +37,32 @@ class SegmentHighlight:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class NetworkEdgeLayer:
+    edges: list[tuple[str, str, list[Coordinate], dict[str, Any]]]
+    name: str = "Full network"
+    color: str = "gray"
+    weight: int = 1
+    opacity: float = 0.35
+    include_in_bounds: bool = True
+
+
+@dataclass
+class NodeMarker:
+    node_id: str
+    coordinate: Coordinate
+    label: str
+    color: str = "blue"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RouteNodeMarkerLayer:
+    nodes: list[NodeMarker]
+    name: str
+    show: bool = False
+
+
 def node_coordinates_from_network_bundle(
     bundle: NetworkBundle,
 ) -> dict[str, Coordinate]:
@@ -48,7 +74,10 @@ def node_coordinates_from_network_bundle(
     coordinates: dict[str, Coordinate] = {}
 
     for source, edges in bundle.graph.adjacency.items():
+        source_id = str(source)
+
         for edge in edges:
+            target_id = str(edge.target)
             attrs = edge.attrs or {}
 
             from_x = attrs.get("from_x")
@@ -57,10 +86,10 @@ def node_coordinates_from_network_bundle(
             to_y = attrs.get("to_y")
 
             if from_x is not None and from_y is not None:
-                coordinates[source] = (float(from_x), float(from_y))
+                coordinates[source_id] = (float(from_x), float(from_y))
 
             if to_x is not None and to_y is not None:
-                coordinates[edge.target] = (float(to_x), float(to_y))
+                coordinates[target_id] = (float(to_x), float(to_y))
 
     return coordinates
 
@@ -88,6 +117,9 @@ class RouteVisualization:
         self.metadata_overlay_visible = metadata_overlay_visible
         self.routes: list[RouteLayer] = []
         self.segment_highlights: list[SegmentHighlight] = []
+        self.network_layers: list[NetworkEdgeLayer] = []
+        self.node_markers: list[NodeMarker] = []
+        self.route_node_marker_layers: list[RouteNodeMarkerLayer] = []
 
 
     def _add_metadata_overlay(self, route_map: folium.Map) -> None:
@@ -232,6 +264,119 @@ class RouteVisualization:
         )
 
 
+    def add_network_layer(
+        self,
+        *,
+        edges: list[tuple[str, str, dict[str, Any]]],
+        name: str = "Full network",
+        color: str = "gray",
+        weight: int = 1,
+        opacity: float = 0.35,
+        include_in_bounds: bool = True,
+    ) -> None:
+        """Add a toggleable full-network edge layer.
+
+        The visualizer only draws edges whose endpoint coordinates are known.
+        It does not validate graph connectivity or route correctness.
+        """
+        drawable_edges: list[tuple[str, str, list[Coordinate], dict[str, Any]]] = []
+
+        for source, target, metadata in edges:
+            if source not in self.node_coordinates:
+                continue
+
+            if target not in self.node_coordinates:
+                continue
+
+            drawable_edges.append(
+                (
+                    source,
+                    target,
+                    [
+                        self.node_coordinates[source],
+                        self.node_coordinates[target],
+                    ],
+                    metadata,
+                )
+            )
+
+        self.network_layers.append(
+            NetworkEdgeLayer(
+                edges=drawable_edges,
+                name=name,
+                color=color,
+                weight=weight,
+                opacity=opacity,
+                include_in_bounds=include_in_bounds,
+            )
+        )
+
+
+    def add_node_marker(
+        self,
+        *,
+        node_id: str,
+        label: str,
+        color: str = "blue",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Add one standalone node marker by node ID."""
+        if node_id not in self.node_coordinates:
+            return
+
+        self.node_markers.append(
+            NodeMarker(
+                node_id=node_id,
+                coordinate=self.node_coordinates[node_id],
+                label=label,
+                color=color,
+                metadata=metadata or {},
+            )
+        )
+
+
+    def add_route_node_markers(
+        self,
+        *,
+        route: list[str],
+        name: str,
+        color: str = "blue",
+        show: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Add indexed route-node markers as a separate toggleable layer."""
+        markers: list[NodeMarker] = []
+        base_metadata = metadata or {}
+
+        for index, node_id in enumerate(route):
+            node_id = str(node_id)
+
+            if node_id not in self.node_coordinates:
+                continue
+
+            markers.append(
+                NodeMarker(
+                    node_id=node_id,
+                    coordinate=self.node_coordinates[node_id],
+                    label=f"{name} node #{index}",
+                    color=color,
+                    metadata={
+                        "index": index,
+                        **base_metadata,
+                    },
+                )
+            )
+
+        if markers:
+            self.route_node_marker_layers.append(
+                RouteNodeMarkerLayer(
+                    nodes=markers,
+                    name=name,
+                    show=show,
+                )
+            )
+
+
     def _resolve_partial_segment_coordinates(
         self,
         *,
@@ -300,27 +445,36 @@ class RouteVisualization:
 
     def _map_bounds_points(self) -> tuple[list[float], list[float]]:
         """Return latitude and longitude lists used for map centering/bounds."""
-        all_lats: list[float] = []
-        all_lons: list[float] = []
+        points: set[Coordinate] = set()
 
         for layer in self.routes:
-            for lon, lat in layer.route_coordinates:
-                all_lats.append(lat)
-                all_lons.append(lon)
+            points.update(layer.route_coordinates)
 
             if layer.ground_truth_coordinates:
-                for lon, lat in layer.ground_truth_coordinates:
-                    all_lats.append(lat)
-                    all_lons.append(lon)
+                points.update(layer.ground_truth_coordinates)
 
         for highlight in self.segment_highlights:
-            for lon, lat in highlight.coordinates:
-                all_lats.append(lat)
-                all_lons.append(lon)
+            points.update(highlight.coordinates)
 
-        if not all_lats and self.node_coordinates:
-            all_lats = [lat for lon, lat in self.node_coordinates.values()]
-            all_lons = [lon for lon, lat in self.node_coordinates.values()]
+        for network_layer in self.network_layers:
+            if not network_layer.include_in_bounds:
+                continue
+
+            for _, _, coordinates, _ in network_layer.edges:
+                points.update(coordinates)
+
+        for marker in self.node_markers:
+            points.add(marker.coordinate)
+
+        for marker_layer in self.route_node_marker_layers:
+            for marker in marker_layer.nodes:
+                points.add(marker.coordinate)
+
+        if not points and self.node_coordinates:
+            points.update(self.node_coordinates.values())
+
+        all_lats = [lat for _, lat in points]
+        all_lons = [lon for lon, _ in points]
 
         return all_lats, all_lons
 
@@ -336,7 +490,7 @@ class RouteVisualization:
         if not layer.ground_truth_coordinates:
             return
 
-        ground_truth_group = folium.FeatureGroup(name=f"{label} · ground truth")
+        ground_truth_group = folium.FeatureGroup(name="Ground truth")
         ground_truth_lat_lons = [
             (lat, lon) for lon, lat in layer.ground_truth_coordinates
         ]
@@ -362,7 +516,7 @@ class RouteVisualization:
         tooltip_html: str,
     ) -> None:
         """Add the candidate route as a separate toggleable layer."""
-        candidate_group = folium.FeatureGroup(name=f"{label} · candidate")
+        candidate_group = folium.FeatureGroup(name=f"{label}")
         route_lat_lons = [(lat, lon) for lon, lat in layer.route_coordinates]
 
         if route_lat_lons:
@@ -460,6 +614,101 @@ class RouteVisualization:
         highlight_group.add_to(route_map)
 
 
+    def _add_network_layers(self, route_map: folium.Map) -> None:
+        """Add full-network edge layers as lightweight toggleable map layers."""
+        for network_layer in self.network_layers:
+            if not network_layer.edges:
+                continue
+
+            feature_group = folium.FeatureGroup(
+                name=network_layer.name,
+                show=True,
+            )
+
+            network_segments = [
+                [(lat, lon) for lon, lat in coordinates]
+                for _, _, coordinates, _ in network_layer.edges
+                if len(coordinates) >= 2
+            ]
+
+            if network_segments:
+                folium.PolyLine(
+                    locations=network_segments,
+                    color=network_layer.color,
+                    weight=network_layer.weight,
+                    opacity=network_layer.opacity,
+                    tooltip=folium.Tooltip(
+                        f"{network_layer.name}: {len(network_segments)} edges"
+                    ),
+                ).add_to(feature_group)
+
+            feature_group.add_to(route_map)
+
+
+    def _add_node_marker_layer(self, route_map: folium.Map) -> None:
+        """Add standalone node markers as a separate toggleable layer."""
+        if not self.node_markers:
+            return
+
+        marker_group = folium.FeatureGroup(name="Selected nodes", show=True)
+
+        for marker in self.node_markers:
+            lon, lat = marker.coordinate
+            tooltip_html = self._format_metadata_html(
+                {
+                    "node_id": marker.node_id,
+                    **marker.metadata,
+                },
+                marker.label,
+            )
+
+            folium.CircleMarker(
+                location=(lat, lon),
+                radius=7,
+                color=marker.color,
+                fill=True,
+                fill_color=marker.color,
+                fill_opacity=0.9,
+                tooltip=folium.Tooltip(tooltip_html),
+            ).add_to(marker_group)
+
+        marker_group.add_to(route_map)
+
+
+    def _add_route_node_marker_layers(self, route_map: folium.Map) -> None:
+        """Add indexed route-node markers as toggleable map layers."""
+        for marker_layer in self.route_node_marker_layers:
+            if not marker_layer.nodes:
+                continue
+
+            feature_group = folium.FeatureGroup(
+                name=marker_layer.name,
+                show=marker_layer.show,
+            )
+
+            for marker in marker_layer.nodes:
+                lon, lat = marker.coordinate
+                tooltip_html = self._format_metadata_html(
+                    {
+                        "node_id": marker.node_id,
+                        **marker.metadata,
+                    },
+                    marker.label,
+                )
+
+                folium.CircleMarker(
+                    location=(lat, lon),
+                    radius=4,
+                    color=marker.color,
+                    fill=True,
+                    fill_color=marker.color,
+                    fill_opacity=0.75,
+                    tooltip=folium.Tooltip(tooltip_html),
+                ).add_to(feature_group)
+
+            feature_group.add_to(route_map)
+
+
     def render(self, save_path: str | None = None) -> folium.Map:
         """Render the map with added route layers and segment highlights."""
         all_lats, all_lons = self._map_bounds_points()
@@ -479,6 +728,9 @@ class RouteVisualization:
             route_map = folium.Map(location=[0, 0], zoom_start=2, tiles=self.tiles)
 
         self._add_metadata_overlay(route_map)
+        self._add_network_layers(route_map)
+        self._add_node_marker_layer(route_map)
+        self._add_route_node_marker_layers(route_map)
 
         for index, layer in enumerate(self.routes, start=1):
             label = layer.metadata.get("label", f"Route {index}")

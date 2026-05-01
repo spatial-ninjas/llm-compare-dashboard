@@ -220,3 +220,29 @@ def safe_map_token(value: Any) -> str:
     """Return a conservative token for temporary map filenames."""
     text = str(value or "unknown")
     return "".join(char if char.isalnum() else "_" for char in text)
+
+
+def network_edges_from_bundle(bundle: Any) -> list[tuple[str, str, dict[str, Any]]]:
+    """Extract drawable graph edges from a loaded NetworkBundle.
+
+    Returned edges are display-only. Route validity remains owned by the
+    research evaluator and graph utilities.
+    """
+    edges: list[tuple[str, str, dict[str, Any]]] = []
+
+    for source, outgoing_edges in bundle.graph.adjacency.items():
+        for edge in outgoing_edges:
+            attrs = edge.attrs or {}
+
+            edges.append(
+                (
+                    str(source),
+                    str(edge.target),
+                    {
+                        "edge_name": attrs.get("edge_name") or attrs.get("name") or "",
+                        "length": attrs.get("length") or attrs.get("distance") or "",
+                    },
+                )
+            )
+
+    return edges
