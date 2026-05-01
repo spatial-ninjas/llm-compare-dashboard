@@ -1,6 +1,6 @@
 # llm-compare-dashboard
 
-Current release: **v0.3.0**
+Current release: **v0.3.1**
 
 This project is a local Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
 
@@ -18,9 +18,9 @@ streamlit run app.py
 
 ## Version note
 
-This repository is currently at `v0.3.0`.
+This repository is currently at `v0.3.1`.
 
-This release builds on the `v0.2.1` route segment-inspection workflow by adding dashboard route-map visualisation for route comparison and highlighted route replay.
+This release builds on the `v0.3.0` route-map comparison workflow by adding full-network context, selected origin/destination markers, route-node inspection, and route-focused map bounds.
 
 Current dashboard capabilities include:
 
@@ -38,10 +38,13 @@ Current dashboard capabilities include:
 - route segment inspection using saved evaluator output
 - reusable Folium route visualisation
 - pre-call route map preview in route-finding mode
+- full-network context for route maps
+- selected origin/destination map markers
 - post-evaluation OpenAI/Gemini route maps
 - route-history map replay for saved evaluations
 - highlighted invalid, missing, and diverging route segments
-- toggleable candidate, ground-truth, highlight, and metadata map layers
+- toggleable full-network, selected-node, candidate-route, ground-truth-route, route-node, highlight, and metadata map layers
+- indexed route-node tooltips for candidate and reference routes
 
 The route-finding mode requires the sibling `research` repository at `v0.1.0` or a compatible version. In the expected local layout, the dashboard installs it through:
 
@@ -77,6 +80,8 @@ The goal is to make model comparison reproducible. Instead of manually copying p
 - review saved route evaluations in a dedicated history view
 - inspect saved routes as ordered node-to-node segments
 - compare candidate and reference routes visually on Folium maps
+- explore selected route tasks with full-network context and OD markers
+- inspect candidate/reference route nodes with indexed map tooltips
 - replay saved route evaluations with route maps and segment highlights
 - export route-history rows for offline research evaluation
 
@@ -150,9 +155,12 @@ It includes:
 - local `NetworkBundle` loading from a GeoPackage
 - cached network loading with `st.cache_resource`
 - default origin node `1004552350`
-- default destination node `12143305053`
-- Dijkstra ground-truth path and length display
+- default destination node `9713069615`
+- Dijkstra ground-truth path, length, and edge-count display
 - pre-call map preview for the selected Dijkstra reference route
+- full-network map context in route preview
+- selected origin/destination markers
+- toggleable Dijkstra reference route-node markers
 - editable route prompt template in a collapsed debug panel
 - generated prompt preview and download
 - OpenAI and Gemini API calls in parallel
@@ -164,7 +172,10 @@ It includes:
 - detailed provider/evaluation cards
 - side-by-side OpenAI and Gemini route maps after evaluation
 - candidate route and ground-truth route overlays
+- selected origin/destination markers on provider result maps
+- toggleable candidate and ground-truth route-node markers
 - highlighted invalid, missing, and diverging candidate segments when evaluator output is available
+- route-focused bounds for provider result maps
 - current route-test JSON export
 
 A route result is shown as satisfactory only when:
@@ -193,7 +204,11 @@ It includes:
 - route segment inspection table
 - raw evaluator output expander for debugging
 - map replay for selected saved evaluations
-- candidate route, ground-truth route, and segment highlights as separate toggleable map layers
+- full-network context in replay maps
+- selected origin/destination markers in replay maps
+- candidate route, ground-truth route, route-node markers, and segment highlights as separate toggleable map layers
+- indexed candidate and ground-truth route-node tooltips
+- route-focused bounds for replay maps
 - toggleable network metadata overlay inside rendered maps
 - detailed history table in a collapsed expander
 - saved route-history JSON export for offline research evaluation
@@ -216,6 +231,36 @@ This keeps the API-call workflow separate from result review. The history view i
 
 ## Release notes
 
+### v0.3.1
+
+Added the first usable network-exploration and route-node inspection workflow on top of the `v0.3.0` map comparison release.
+
+Highlights:
+
+- full-network context is now available on route maps
+- selected origin and destination markers are shown on preview, result, and replay maps
+- route-finding preview shows a compact reference-route summary with:
+  - ground-truth length
+  - number of ground-truth edges
+- Dijkstra reference route nodes can be inspected as a toggleable map layer
+- provider candidate route nodes can be inspected as toggleable map layers
+- ground-truth route nodes can be inspected as toggleable map layers
+- route-node tooltips include node ID, route index, route type, and relevant provider/evaluation metadata
+- route-history replay maps now have parity with route-finding maps:
+  - full-network context
+  - selected OD markers
+  - candidate/reference route-node layers
+  - segment highlights
+- map bounds behavior was refined:
+  - pre-call preview maps fit to the full network
+  - provider result maps fit to the relevant candidate/reference route area
+  - history replay maps fit to the selected saved route area
+
+Notes:
+
+- this completes the first usable map workflow for both route comparison and pre-call route/network exploration
+- richer follow-ups such as map-click OD selection, easier node-ID copying, and grouped repeated-run route comparison are intentionally left for later issues
+
 ### v0.3.0
 
 Added route-map visualisation for route comparison and highlighted route replay.
@@ -233,11 +278,13 @@ Highlights:
 - map embedding uses `st.iframe` data URLs instead of deprecated `st.components.v1.html`
 - increased default token budgets for route responses
 
-Known remaining map work:
+Known remaining map work at the time of `v0.3.0`:
 
-- full loaded-network layer is not implemented yet
-- route node markers and node-ID inspection/copying are still future work
-- map-based OD-pair exploration is not complete yet
+- full loaded-network layer was not implemented yet
+- route node markers and node-ID inspection/copying were still future work
+- map-based OD-pair exploration was not complete yet
+
+These items are addressed at a first usable level in `v0.3.1`.
 
 ### v0.2.1
 
@@ -438,12 +485,12 @@ The default prompt asks the model to return strict JSON using the route schema e
 ```json
 {
   "origin": "1004552350",
-  "destination": "12143305053",
+  "destination": "9713069615",
   "total_length": 123.4,
   "route": [
     {"node": "1004552350", "edge_name": "start"},
     {"node": "...", "edge_name": "[STREET NAME]"},
-    {"node": "12143305053", "edge_name": "[STREET NAME]"}
+    {"node": "9713069615", "edge_name": "[STREET NAME]"}
   ],
   "status": "success"
 }
@@ -562,7 +609,7 @@ The saved route-history export is compatible with the research repo’s offline 
   "finish_status": "completed",
   "max_output_tokens": 2048,
   "origin": "1004552350",
-  "destination": "12143305053",
+  "destination": "9713069615",
   "ssal_hash": "abc123...",
   "prompt": "...",
   "response_text": "{...model route JSON...}",
@@ -593,7 +640,7 @@ llm-compare-dashboard/
     network.py                   Local NetworkBundle loading
     route_prompts.py             Route prompt template and builder
     route_visualization.py       Reusable Folium route visualisation helpers
-    route_map_helpers.py         Shared map embedding and segment-highlight helpers
+    route_map_helpers.py         Shared map embedding, network-layer, and segment-highlight helpers
     views/
       general.py                 General prompt-comparison view
       route_finding.py           Route-finding view for new route tests
@@ -627,7 +674,8 @@ The smoke map disables online base-map tiles by default, so it avoids OpenStreet
 - The dashboard shows per-call usage metadata. It does not show a provider-wide “tokens left” counter.
 - Saved-history export is available in the general and route-evaluation history views, but destructive “clear history” controls are intentionally not shown in the current UI.
 - Route comparison maps are available in route-finding results and route-evaluation history.
-- Full network exploration, route node markers, and node-ID copying are planned future map improvements.
+- Route maps now include full-network context, selected OD markers, route-node marker layers, and segment highlights.
+- Future map improvements may include map-click OD selection, easier node-ID copying, and grouped repeated-run route comparison.
 - Keep `.env` out of Git.
 - Keep `history.db` out of Git.
 - Keep `.cache/` out of Git if you later enable remote network caching.
