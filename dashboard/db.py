@@ -62,6 +62,43 @@ def _bool_to_int(value: Any) -> int | None:
     return 1 if bool(value) else 0
 
 
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    column_name: str,
+    column_definition: str,
+) -> None:
+    existing_columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+
+    if column_name not in existing_columns:
+        conn.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
+
+
+def _ensure_columns(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    columns: dict[str, str],
+) -> None:
+    for column_name, column_definition in columns.items():
+        _ensure_column(
+            conn,
+            table_name=table_name,
+            column_name=column_name,
+            column_definition=column_definition,
+        )
+
+
 def init_db() -> None:
     """Create or migrate the local dashboard database.
 
@@ -92,21 +129,16 @@ def init_db() -> None:
             """
         )
 
-        existing_columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(runs)").fetchall()
-        }
-
-        extra_columns = {
-            "thinking_mode": "TEXT",
-            "thinking_budget": "INTEGER",
-            "thoughts_tokens": "INTEGER",
-            "attempts": "INTEGER",
-        }
-
-        for column_name, column_type in extra_columns.items():
-            if column_name not in existing_columns:
-                conn.execute(f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}")
+        _ensure_columns(
+            conn,
+            table_name="runs",
+            columns={
+                "thinking_mode": "TEXT",
+                "thinking_budget": "INTEGER",
+                "thoughts_tokens": "INTEGER",
+                "attempts": "INTEGER",
+            },
+        )
 
         conn.execute(
             """
@@ -117,10 +149,26 @@ def init_db() -> None:
                 destination TEXT NOT NULL,
                 ssal_hash TEXT NOT NULL,
                 prompt_template TEXT NOT NULL,
+                prompt_template_name TEXT,
+                ssal_profile_name TEXT,
                 ground_truth_path_json TEXT,
                 ground_truth_length REAL
             )
             """
+        )
+
+        _ensure_column(
+            conn,
+            table_name="route_tasks",
+            column_name="prompt_template_name",
+            column_definition="TEXT",
+        )
+
+        _ensure_column(
+            conn,
+            table_name="route_tasks",
+            column_name="ssal_profile_name",
+            column_definition="TEXT",
         )
 
         conn.execute(
@@ -221,7 +269,7 @@ def save_run(prompt: str, result: Dict[str, Any]) -> int:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                time.strftime("%Y-%m-%d %H:%M:%S"),
+                _now(),
                 prompt,
                 result.get("provider"),
                 meta.get("model"),
@@ -323,8 +371,10 @@ def save_route_task(
     destination: str,
     ssal_hash: str,
     prompt_template: str,
-    ground_truth_path: list[str] | None = None,
-    ground_truth_length: float | None = None,
+    prompt_template_name: str | None = None,
+    ssal_profile_name: str | None = None,
+    ground_truth_path: list[str],
+    ground_truth_length: float | None,
 ) -> int:
     """Save one route-finding task and return the inserted task ID.
 
@@ -340,17 +390,22 @@ def save_route_task(
                 destination,
                 ssal_hash,
                 prompt_template,
+                prompt_template_name,
+                ssal_profile_name,
                 ground_truth_path_json,
                 ground_truth_length
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                time.strftime("%Y-%m-%d %H:%M:%S"),
+                _now(),
                 origin,
                 destination,
                 ssal_hash,
                 prompt_template,
-                _json_dumps(ground_truth_path),
+                prompt_template_name,
+                ssal_profile_name,
+                json.dumps(ground_truth_path),
                 ground_truth_length,
             ),
         )
@@ -399,7 +454,7 @@ def save_route_evaluation(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                time.strftime("%Y-%m-%d %H:%M:%S"),
+                _now(),
                 task_id,
                 run_id,
                 provider,
@@ -445,6 +500,8 @@ def load_route_evaluations(limit: int = 100) -> pd.DataFrame:
                 rt.origin,
                 rt.destination,
                 rt.ssal_hash,
+                rt.prompt_template_name,
+                rt.ssal_profile_name,
 
                 re.valid_json,
                 re.valid_path,
@@ -501,7 +558,9 @@ def export_route_history_rows() -> list[dict[str, Any]]:
                 r.error_text,
                 rt.origin,
                 rt.destination,
-                rt.ssal_hash
+                rt.ssal_hash,
+                rt.prompt_template_name,
+                rt.ssal_profile_name
             FROM route_evaluations re
             JOIN route_tasks rt ON rt.id = re.task_id
             JOIN runs r ON r.id = re.run_id
@@ -520,6 +579,8 @@ def export_route_history_rows() -> list[dict[str, Any]]:
             "origin": row["origin"],
             "destination": row["destination"],
             "ssal_hash": row["ssal_hash"],
+            "prompt_template_name": row["prompt_template_name"],
+            "ssal_profile_name": row["ssal_profile_name"],
             "prompt": row["prompt"],
             "response_text": row["response_text"] or "",
             "error_text": row["error_text"],

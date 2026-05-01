@@ -164,6 +164,9 @@ def _render_selected_evaluation_summary(selected_row: dict[str, Any]) -> None:
     destination = selected_row.get("destination", "—")
     evaluation_id = selected_row.get("id", "—")
 
+    prompt_template_name = selected_row.get("prompt_template_name") or "—"
+    ssal_profile_name = selected_row.get("ssal_profile_name") or "—"
+
     candidate_path = parse_path(selected_row.get("candidate_path_json"))
     ground_truth_path = parse_path(selected_row.get("ground_truth_path_json"))
 
@@ -181,6 +184,9 @@ def _render_selected_evaluation_summary(selected_row: dict[str, Any]) -> None:
         st.markdown(f"**#{evaluation_id} · {provider}/{model}**")
         st.caption(str(created_at))
         st.markdown(f"Route: `{origin}` → `{destination}`")
+
+        st.caption(f"Prompt template: {prompt_template_name}")
+        st.caption(f"SSAL profile: {ssal_profile_name}")
 
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
 
@@ -494,6 +500,8 @@ def render_route_history_view() -> None:
         "relative_length_error",
         "node_overlap",
         "edge_overlap",
+        "prompt_template_name",
+        "ssal_profile_name",
         "error_text",
     ]
 

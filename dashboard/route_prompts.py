@@ -5,8 +5,8 @@ from __future__ import annotations
 from string import Formatter
 
 
+DEFAULT_ROUTE_PROMPT_TEMPLATE_NAME = "Built-in default route prompt"
 DEFAULT_SSAL_PROFILE_NAME = "default_length_name_oneway_coords"
-
 REQUIRED_ROUTE_PROMPT_PLACEHOLDERS = {"origin", "destination", "ssal_text"}
 
 DEFAULT_SSAL_SCHEMA_DESCRIPTION = """
