@@ -31,6 +31,8 @@ from dashboard.route_map_helpers import (
 )
 from dashboard.route_prompts import (
     DEFAULT_ROUTE_PROMPT_TEMPLATE,
+    DEFAULT_SSAL_PROFILE_NAME,
+    DEFAULT_SSAL_SCHEMA_DESCRIPTION,
     build_route_prompt,
 )
 from dashboard.route_visualization import (
@@ -234,6 +236,7 @@ def _evaluation_download_payload(
     origin: str,
     destination: str,
     ssal_hash: str,
+    ssal_profile_name: str,
     openai_run_id: int,
     gemini_run_id: int,
     openai_result: dict[str, Any],
@@ -249,6 +252,7 @@ def _evaluation_download_payload(
                 "origin": origin,
                 "destination": destination,
                 "ssal_hash": ssal_hash,
+                "ssal_profile_name": ssal_profile_name,
             },
             "openai": {
                 "run_id": openai_run_id,
@@ -715,6 +719,10 @@ def render_route_finding_view() -> None:
         return
 
     with st.expander("Debug / prompt and network details", expanded=False):
+        st.subheader("SSAL profile")
+        st.write(f"Profile: `{DEFAULT_SSAL_PROFILE_NAME}`")
+        st.code(DEFAULT_SSAL_SCHEMA_DESCRIPTION, language="text")
+
         st.subheader("Prompt template")
 
         edited_template = st.text_area(
@@ -902,6 +910,7 @@ def render_route_finding_view() -> None:
             origin=origin,
             destination=destination,
             ssal_hash=bundle.ssal_hash,
+            ssal_profile_name=DEFAULT_SSAL_PROFILE_NAME,
             openai_run_id=openai_run_id,
             gemini_run_id=gemini_run_id,
             openai_result=openai_result,
