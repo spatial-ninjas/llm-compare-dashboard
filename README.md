@@ -10,7 +10,7 @@ The app can be run locally on your own computer and opened in your browser:
 streamlit run app.py
 ```
 
-It can also be configured for shared deployment by loading the route-network GeoPackage from a hosted object URL instead of relying on a sibling local `research` checkout.
+It can also be configured for shared deployment by loading the route-network GeoPackage from a hosted object URL and by storing dashboard persistence in a managed PostgreSQL database.
 
 ![Main dashboard view](docs/screenshot-main.png)
 
@@ -69,7 +69,7 @@ Current dashboard capabilities include:
 - **General provider comparison**
   - side-by-side OpenAI/Gemini prompt comparison
   - model/settings controls, response metadata, token usage, latency, and retry info
-  - persistent local SQLite history and JSON export
+  - persistent saved history and JSON export using local SQLite or configured PostgreSQL
 
 - **SSAL-native route finding**
   - `NetworkBundle` loading through the installed `research` package
@@ -105,7 +105,7 @@ The goal is to make model comparison and route-navigation experiments reproducib
 Instead of manually copying prompts between providers or writing one-off scripts, the dashboard keeps the workflow in one app:
 
 - run the same prompt against OpenAI and Gemini
-- save provider calls and route evaluations to local SQLite history
+- save provider calls and route evaluations to local SQLite history or a managed PostgreSQL database
 - generate SSAL-based route prompts from a shared route network
 - compare model-generated routes against Dijkstra ground truth
 - inspect route outputs visually and segment-by-segment
@@ -257,7 +257,7 @@ The route evaluation history mode is for reviewing saved route-specific evaluati
 It is organized around three main workflows:
 
 - **Saved evaluation browsing**
-  - compact saved-evaluation overview table loaded from local SQLite history
+  - compact saved-evaluation overview table loaded from the configured database
   - provider filter
   - satisfactory / needs-review status filter
   - detailed history table in a collapsed expander
@@ -555,6 +555,12 @@ Then edit `.env`:
 OPENAI_API_KEY=your_openai_api_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
 
+# Persistence
+#
+# Leave empty to use local SQLite history.db.
+# Set to a PostgreSQL URL for deployed persistence.
+DATABASE_URL=
+
 # Route-finding network data
 #
 # Local development path. Takes priority if the file exists.
@@ -704,6 +710,39 @@ NETWORK_EDGES_LAYER
 NETWORK_NODES_LAYER
 ```
 
+## Database configuration
+
+By default, the dashboard uses local SQLite. If `DATABASE_URL` is empty or unset, the app creates `history.db` next to `app.py`.
+
+For deployment, set `DATABASE_URL` to a managed PostgreSQL database:
+
+```env
+DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
+```
+
+The same persistence helpers are used for local SQLite and PostgreSQL. PostgreSQL mode persists:
+
+- general provider runs
+- route prompt templates
+- route tasks
+- route evaluations
+
+Recommended local configuration:
+
+```env
+# Leave empty or unset for local SQLite history.db.
+DATABASE_URL=
+```
+
+Recommended deployment configuration:
+
+```env
+DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
+```
+
+Existing local `history.db` data is not automatically migrated to PostgreSQL. Use JSON exports or a separate migration script if old local data needs to be preserved.
+
+
 ## Route prompt template workflow
 
 The route-finding prompt is generated from:
@@ -767,7 +806,9 @@ Reusable templates do not store full SSAL text. Saved route tasks store a snapsh
 
 ## Persistence model
 
-The app creates `history.db` in the same folder as `app.py`.
+The app stores dashboard history in the configured database backend.
+
+By default, when `DATABASE_URL` is empty or unset, the app creates a local SQLite file named `history.db` in the same folder as `app.py`. For deployment, `DATABASE_URL` can point to a managed PostgreSQL database so saved runs, prompt templates, route tasks, and route evaluations persist across app restarts or redeployments.
 
 The persistence model separates generic provider calls, reusable prompt templates, and route-specific evaluation data:
 
@@ -817,7 +858,7 @@ Stores reusable local route prompt templates:
 - creation/update timestamps
 - built-in flag reserved for future migration flexibility
 
-The built-in default prompt is kept in `dashboard.route_prompts` rather than seeded into SQLite.
+The built-in default prompt is kept in `dashboard.route_prompts` rather than seeded into the database.
 
 ### `route_tasks`
 
@@ -852,7 +893,7 @@ Stores one evaluated provider response for one route task:
 
 The route evaluation history view uses the saved candidate path, ground-truth path, and raw evaluator JSON to render segment inspection without duplicating route validation logic in the dashboard.
 
-The app auto-migrates older `history.db` files by adding missing generic-history columns and creating route-specific tables when needed.
+SQLite mode auto-migrates older `history.db` files by adding missing generic-history columns and creating route-specific tables when needed. Existing SQLite data is not automatically copied into PostgreSQL.
 
 ## Export behavior
 
@@ -909,12 +950,12 @@ llm-compare-dashboard/
   app.py                         Streamlit entrypoint, app version, and mode router
   requirements.txt               Python dependencies, including spatial-ninjas-research
   .env.example                   Environment variable template
-  history.db                     Local SQLite DB, created automatically and ignored by Git
+  history.db                     Local SQLite DB, created automatically when DATABASE_URL is unset
   .cache/                        Optional local cache for remotely fetched network data, ignored by Git
 
   dashboard/
     api_clients.py               OpenAI/Gemini API wrappers and retry behavior
-    db.py                        SQLite persistence helpers and prompt-template storage
+    db.py                        SQLite/PostgreSQL persistence helpers and schema initialization
     network.py                   Local/remote NetworkBundle loading and GeoPackage cache resolution
     route_prompts.py             Built-in route prompt template, SSAL profile metadata, and validation
     route_visualization.py       Reusable Folium route visualisation helpers
@@ -1020,6 +1061,7 @@ The network bundle is not reloaded on normal client refresh.
 - Route maps now include full-network context, selected origin/destination markers, route-node marker layers, and segment highlights.
 - Route finding now includes a reusable prompt-template selector/editor with validation and local template persistence.
 - Route finding can load the GeoPackage from either a local path or a remote hosted object with cache reuse.
+- Dashboard persistence uses local SQLite by default and can use PostgreSQL when `DATABASE_URL` is configured.
 - Future map improvements may include map-click OD selection, easier node-ID copying, and grouped repeated-run route comparison.
 - Keep `.env` out of Git.
 - Keep `history.db` out of Git.
