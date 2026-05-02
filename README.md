@@ -1,29 +1,33 @@
 # llm-compare-dashboard
 
-Current release: **v0.4.0**
+Current release: **v0.4.1**
 
-This project is a local Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
+This project is a Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
 
-The app runs on your own computer and opens in your browser. It is not deployed as a public website or backend service. Start it locally with:
+The app can be run locally on your own computer and opened in your browser:
 
 ```bash
 streamlit run app.py
 ```
 
+It can also be configured for shared deployment by loading the route-network GeoPackage from a hosted object URL instead of relying on a sibling local `research` checkout.
+
 ![Main dashboard view](docs/screenshot-main.png)
 
 > [!IMPORTANT]
-> Never commit API keys, `.env`, `history.db`, or any other secrets/local state to Git.
+> Never commit API keys, `.env`, `history.db`, `.cache/`, or any other secrets/local state to Git.
 > If an API key is accidentally committed, assume it is compromised, revoke it, and generate a new one.
 
 ## Version note
 
-This repository is currently at `v0.4.0`.
+This repository is currently at `v0.4.1`.
 
-This release builds on the `v0.3.1` route-map workflow by adding a reusable route prompt-template workflow for route-finding experiments.
+This patch release builds on the `v0.4.0` route prompt-template workflow by adding remote GeoPackage loading with local cache fallback for route-finding deployments.
 
 > [!NOTE]
-> The dashboard now installs the shared research code from the published `spatial-ninjas-research` package. However, route-finding mode still expects the GeoPackage data file to be available locally. Until remote GeoPackage fetching is implemented, the easiest setup is still to keep the `research` repo as a sibling folder:
+> The dashboard installs the shared research code from the published `spatial-ninjas-research` package. Route-finding mode can now load the GeoPackage network either from a local path or from a remote hosted object with local cache reuse.
+>
+> For local development, the easiest setup is still often to keep the `research` repo as a sibling folder:
 >
 > ```text
 > spatial-ninjas/
@@ -31,13 +35,13 @@ This release builds on the `v0.3.1` route-map workflow by adding a reusable rout
 >   llm-compare-dashboard/
 > ```
 >
-> This sibling checkout is currently needed for route-network data, not for importing the Python research package.
+> In that setup, `NETWORK_GPKG_PATH` can point to the GeoPackage inside the sibling `research` checkout. This sibling checkout is needed for route-network data convenience, not for importing the Python research package.
 
 ## Concepts used in this README
 
-**SSAL** means **Simplified Semantic Adjacency List**. In this project, it is a text representation of a road/routing network. Each node lists its outgoing neighbouring nodes and edge attributes such as length, street name, direction flag, and coordinates. The dashboard sends this SSAL text to the model as route-finding context.
+**SSAL** means Simplified Semantic Adjacency List. In this project, it is a text representation of a road/routing network. Each node lists its outgoing neighbouring nodes and edge attributes such as length, street name, direction flag, and coordinates. The dashboard sends this SSAL text to the model as route-finding context.
 
-**origin–destination pair** means **origin–destination node pair**. It is the selected start node and target node for one route-finding task.
+**OD pair** means origin-destination node pair. It is the selected start node and target node for one route-finding task.
 
 **Ground truth** means the deterministic shortest route computed by the shared research-side graph code, currently using Dijkstra shortest path over the loaded SSAL-derived graph.
 
@@ -52,7 +56,7 @@ General prompt comparison
   Send the same free-form prompt to OpenAI and Gemini.
 
 Route finding
-  Select an origin–destination pair, generate an SSAL-based route prompt, run both providers,
+  Select an OD pair, generate an SSAL-based route prompt, run both providers,
   evaluate the returned routes, and save the route-specific metrics.
 
 Route evaluation history
@@ -69,7 +73,9 @@ Current dashboard capabilities include:
 
 - **SSAL-native route finding**
   - `NetworkBundle` loading through the installed `research` package
-  - local GeoPackage data loaded from the sibling `research` checkout for now
+  - local GeoPackage loading through `NETWORK_GPKG_PATH`
+  - remote GeoPackage loading through `NETWORK_GPKG_URL` with local cache reuse
+  - optional GeoPackage checksum verification through `NETWORK_GPKG_SHA256`
   - Dijkstra ground-truth route generation
   - parallel OpenAI/Gemini route calls
   - route evaluation with saved metrics and JSON export
@@ -96,7 +102,7 @@ Current dashboard capabilities include:
 
 The goal is to make model comparison and route-navigation experiments reproducible.
 
-Instead of manually copying prompts between providers or writing one-off scripts, the dashboard keeps the workflow in one local app:
+Instead of manually copying prompts between providers or writing one-off scripts, the dashboard keeps the workflow in one app:
 
 - run the same prompt against OpenAI and Gemini
 - save provider calls and route evaluations to local SQLite history
@@ -123,6 +129,14 @@ from research.graph import dijkstra_shortest_path
 from research.evaluation import evaluate_route_response
 from research.network_loader import load_network_bundle_from_gpkg
 ```
+
+The dashboard also uses the research-side network cache helper for remote GeoPackage loading:
+
+```python
+from research.network_loader import fetch_or_reuse_cached_file
+```
+
+Large GeoPackage data files are not distributed through the PyPI package. The package provides reusable code; the GeoPackage network data is configured separately through environment variables.
 
 For local development, you can still use an editable checkout if you are changing both repositories together.
 
@@ -183,7 +197,10 @@ The route-finding mode loads the configured SSAL-native routing network, lets yo
 It is organized around four main workflows:
 
 - **Route setup and reference route**
-  - local `NetworkBundle` loading from a GeoPackage
+  - `NetworkBundle` loading from a local or cached GeoPackage
+  - local-first network resolution using `NETWORK_GPKG_PATH`
+  - remote fallback using `NETWORK_GPKG_URL`
+  - optional checksum verification using `NETWORK_GPKG_SHA256`
   - cached network loading with `st.cache_resource`
   - default origin node `1004552350`
   - default destination node `9713069615`
@@ -281,6 +298,27 @@ This keeps the API-call workflow separate from result review. The history view i
 
 ## Release notes
 
+### v0.4.1
+
+Added remote GeoPackage loading with local cache fallback for route-finding deployments.
+
+Highlights:
+
+- route-finding mode can now load the GeoPackage from a hosted object URL
+- local `NETWORK_GPKG_PATH` remains the first priority for local development
+- remote fallback uses `NETWORK_GPKG_URL`
+- downloaded GeoPackages are cached under `NETWORK_CACHE_DIR`
+- optional `NETWORK_GPKG_SHA256` verification is supported
+- cached files can be reused across Streamlit reruns and normal client refreshes
+- `.env.example` and README now document local/deployment-compatible network configuration
+
+Notes:
+
+- this release does not change route evaluation semantics
+- the dashboard still loads the resolved local or cached GeoPackage through `research.network_loader.load_network_bundle_from_gpkg()`
+- remote download/cache handling is delegated to `research.network_loader.fetch_or_reuse_cached_file()`
+- managed database support, authentication, and deployment packaging remain separate follow-up work
+
 ### v0.4.0
 
 Added a reusable route prompt-template workflow for route-finding experiments.
@@ -363,7 +401,7 @@ Known remaining map work at the time of `v0.3.0`:
 
 - full loaded-network layer was not implemented yet
 - route node markers and node-ID inspection/copying were still future work
-- map-based origin–destination-pair exploration was not complete yet
+- map-based OD-pair exploration was not complete yet
 
 These items are addressed at a first usable level in `v0.3.1`.
 
@@ -397,7 +435,7 @@ Highlights:
 
 ### 1. Clone the dashboard repo
 
-For normal use, only this repository is required:
+For normal use, clone this repository:
 
 ```bash
 git clone https://github.com/spatial-ninjas/llm-compare-dashboard.git
@@ -406,7 +444,7 @@ cd llm-compare-dashboard
 
 The shared research utilities are installed from PyPI through `requirements.txt`.
 
-If you are developing the dashboard and research package together, you may also keep both repositories side by side:
+If you are developing the dashboard and research package together, or if you want to use the local GeoPackage from the research repo, you may keep both repositories side by side:
 
 ```text
 spatial-ninjas/
@@ -414,7 +452,7 @@ spatial-ninjas/
   llm-compare-dashboard/
 ```
 
-Then install `../research` as an editable development override after installing dashboard dependencies.
+The sibling `research` checkout is optional for Python imports, but useful for local network data through `NETWORK_GPKG_PATH`.
 
 ### 2. Create and activate a virtual environment
 
@@ -471,6 +509,7 @@ After installing dependencies, verify that the dashboard can import the shared p
 python -c "from research.graph import build_graph_from_ssal; print('graph ok')"
 python -c "from research.evaluation import evaluate_route_response; print('evaluation ok')"
 python -c "from research.network_loader import load_network_bundle_from_gpkg; print('network loader ok')"
+python -c "from research.network_loader import fetch_or_reuse_cached_file; print('network cache helper ok')"
 python -c "from dashboard.views.general import render_general_view; print('general view ok')"
 python -c "from dashboard.views.route_finding import render_route_finding_view; print('route view ok')"
 python -c "from dashboard.views.route_history import render_route_history_view; print('route history view ok')"
@@ -513,22 +552,36 @@ Copy-Item .env.example .env
 Then edit `.env`:
 
 ```env
-# API keys
 OPENAI_API_KEY=your_openai_api_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
 
 # Route-finding network data
+#
+# Local development path. Takes priority if the file exists.
+# This may point to a sibling research checkout for now.
 NETWORK_GPKG_PATH=../research/data/raw/routing_networks/osm_southern_helsinki_slimmed_cropped.gpkg
-NETWORK_GPKG_URL=
-NETWORK_GPKG_SHA256=
+
+# Remote deployment fallback. Used when NETWORK_GPKG_PATH is missing or invalid.
+NETWORK_GPKG_URL=https://spatial-ninjas-bucket.s3.eu-north-1.amazonaws.com/osm_southern_helsinki_slimmed_cropped.gpkg
+NETWORK_GPKG_SHA256=f51a76e9335d4aa9d3bcd7938ccc0ee293fb872dd175acadd4cae21a2cb0055e
+NETWORK_CACHE_DIR=.cache/network
+
+# Layers inside the GeoPackage.
 NETWORK_EDGES_LAYER=slimmed_cropped_edges
 NETWORK_NODES_LAYER=slimmed_cropped_nodes
-NETWORK_CACHE_DIR=.cache/network
 ```
 
-For current local development, `NETWORK_GPKG_PATH` may still point to the GeoPackage file in a sibling `research` checkout. This is a data-file dependency, not a Python package dependency. Remote GeoPackage loading through `NETWORK_GPKG_URL` is planned for deployment.
+It is fine to keep `NETWORK_GPKG_PATH`, `NETWORK_GPKG_URL`, and `NETWORK_GPKG_SHA256` configured at the same time.
 
-`NETWORK_GPKG_URL`, `NETWORK_GPKG_SHA256`, and `NETWORK_CACHE_DIR` are reserved for optional remote GeoPackage fetching/caching. Local path mode is the currently implemented network loading path.
+The dashboard resolves the network in this order:
+
+1. If `NETWORK_GPKG_PATH` points to an existing file, use it.
+2. Otherwise, if `NETWORK_GPKG_URL` is set, fetch or reuse a cached remote file.
+3. Otherwise, show a configuration error.
+
+For local development, `NETWORK_GPKG_PATH` can use the GeoPackage from a sibling `research` checkout. In deployment, that local path may not exist, so the dashboard falls back to `NETWORK_GPKG_URL` and stores the downloaded file under `NETWORK_CACHE_DIR`.
+
+If `NETWORK_GPKG_SHA256` is provided, the downloaded or cached file must match it. A mismatch is reported as a configuration error instead of silently loading the file.
 
 ### 6. Run the app
 
@@ -544,12 +597,12 @@ http://localhost:8501
 
 ## Route-finding network configuration
 
-The route-finding mode loads the local routing network through the installed `research` package.
+The route-finding mode loads the routing network through the installed `research` package.
 
-The local loading path is:
+The loading path is:
 
 ```text
-GeoPackage
+local path or cached remote GeoPackage
   ↓
 research.network_loader.load_network_bundle_from_gpkg()
   ↓
@@ -562,13 +615,74 @@ NetworkBundle
 
 The dashboard does not parse the GeoPackage or build the graph itself. It reuses the shared research-side network loader so the dashboard and research evaluator use the same SSAL-native representation.
 
-Required local variables:
+### Network resolution order
+
+The dashboard resolves the GeoPackage in this order:
+
+1. If `NETWORK_GPKG_PATH` points to an existing local file, use it.
+2. Otherwise, if `NETWORK_GPKG_URL` is set, fetch or reuse a cached remote file.
+3. Otherwise, show a configuration error.
+
+This means local development can keep using a sibling research checkout, while deployment can use a hosted GeoPackage object.
+
+Recommended local/deployment-compatible configuration:
 
 ```env
+# Local development path. Takes priority if it exists.
 NETWORK_GPKG_PATH=../research/data/raw/routing_networks/osm_southern_helsinki_slimmed_cropped.gpkg
+
+# Remote fallback. Used when the local path is missing or invalid.
+NETWORK_GPKG_URL=https://spatial-ninjas-bucket.s3.eu-north-1.amazonaws.com/osm_southern_helsinki_slimmed_cropped.gpkg
+NETWORK_GPKG_SHA256=f51a76e9335d4aa9d3bcd7938ccc0ee293fb872dd175acadd4cae21a2cb0055e
+NETWORK_CACHE_DIR=.cache/network
+
+# Layers inside the GeoPackage.
 NETWORK_EDGES_LAYER=slimmed_cropped_edges
 NETWORK_NODES_LAYER=slimmed_cropped_nodes
 ```
+
+### Hosted object setup
+
+The remote GeoPackage may be hosted on S3 or any HTTPS-accessible object URL.
+
+Expected setup:
+
+```text
+canonical GeoPackage uploaded to hosted object storage
+  ↓
+dashboard configured with NETWORK_GPKG_URL
+  ↓
+optional NETWORK_GPKG_SHA256 verifies the file
+  ↓
+NETWORK_CACHE_DIR stores the cached local copy
+```
+
+For the current hosted object, the default `.env.example` uses:
+
+```env
+NETWORK_GPKG_URL=https://spatial-ninjas-bucket.s3.eu-north-1.amazonaws.com/osm_southern_helsinki_slimmed_cropped.gpkg
+NETWORK_GPKG_SHA256=f51a76e9335d4aa9d3bcd7938ccc0ee293fb872dd175acadd4cae21a2cb0055e
+```
+
+If the hosted object is private, the deployment environment must provide access through a presigned URL, platform credentials, or another fetch mechanism supported by `research.network_loader.fetch_or_reuse_cached_file()`.
+
+### Cache behavior
+
+Remote files are fetched or reused through:
+
+```python
+research.network_loader.fetch_or_reuse_cached_file()
+```
+
+The resolved local or cached file is then loaded through:
+
+```python
+research.network_loader.load_network_bundle_from_gpkg()
+```
+
+The route network bundle is cached with Streamlit resource caching, so normal client refreshes do not repeatedly reload the GeoPackage or rebuild the network bundle.
+
+If a cached file already exists and passes checksum validation, the dashboard can reuse it even if the remote URL is temporarily unavailable. If the cache is removed, the remote URL and checksum must be valid for remote loading to succeed.
 
 When the route mode is opened, it loads the configured GeoPackage into a cached `NetworkBundle`. The route mode displays short network status in the sidebar and fuller debug details in the collapsed debug panel:
 
@@ -579,7 +693,16 @@ When the route mode is opened, it loads the configured GeoPackage into a cached 
 - node count
 - SSAL preview
 
-If `NETWORK_GPKG_PATH` is missing or invalid, the route-finding view shows a clear Streamlit error explaining which network configuration should be checked.
+If network loading fails, the route-finding view shows a clear Streamlit error and reminds the user to check:
+
+```text
+NETWORK_GPKG_PATH
+NETWORK_GPKG_URL
+NETWORK_GPKG_SHA256
+NETWORK_CACHE_DIR
+NETWORK_EDGES_LAYER
+NETWORK_NODES_LAYER
+```
 
 ## Route prompt template workflow
 
@@ -787,11 +910,12 @@ llm-compare-dashboard/
   requirements.txt               Python dependencies, including spatial-ninjas-research
   .env.example                   Environment variable template
   history.db                     Local SQLite DB, created automatically and ignored by Git
+  .cache/                        Optional local cache for remotely fetched network data, ignored by Git
 
   dashboard/
     api_clients.py               OpenAI/Gemini API wrappers and retry behavior
     db.py                        SQLite persistence helpers and prompt-template storage
-    network.py                   Local NetworkBundle loading
+    network.py                   Local/remote NetworkBundle loading and GeoPackage cache resolution
     route_prompts.py             Built-in route prompt template, SSAL profile metadata, and validation
     route_visualization.py       Reusable Folium route visualisation helpers
     route_map_helpers.py         Shared map embedding, network-layer, and segment-highlight helpers
@@ -818,6 +942,72 @@ open route_visualization_test.html
 
 The smoke map disables online base-map tiles by default, so it avoids OpenStreetMap tile-server blocking when opened from a local HTML file.
 
+## Network loading manual verification
+
+These checks are useful when changing route-network configuration or deployment setup.
+
+### Local path priority
+
+Configure a valid local path and a valid remote fallback:
+
+```env
+NETWORK_GPKG_PATH=../research/data/raw/routing_networks/osm_southern_helsinki_slimmed_cropped.gpkg
+NETWORK_GPKG_URL=https://spatial-ninjas-bucket.s3.eu-north-1.amazonaws.com/osm_southern_helsinki_slimmed_cropped.gpkg
+NETWORK_GPKG_SHA256=f51a76e9335d4aa9d3bcd7938ccc0ee293fb872dd175acadd4cae21a2cb0055e
+```
+
+Expected result:
+
+```text
+The local path is used first.
+Remote download is not needed.
+Route-finding mode loads normally.
+```
+
+### Remote fallback
+
+Make `NETWORK_GPKG_PATH` invalid while keeping `NETWORK_GPKG_URL` and `NETWORK_GPKG_SHA256` valid.
+
+Expected result:
+
+```text
+The remote GeoPackage is downloaded or reused from NETWORK_CACHE_DIR.
+Route-finding mode loads normally.
+```
+
+### Cache reuse
+
+After the remote file has been cached, temporarily make both `NETWORK_GPKG_PATH` and `NETWORK_GPKG_URL` unavailable.
+
+Expected result:
+
+```text
+The existing cached file can still be reused if it passes checksum validation.
+Route-finding mode loads normally.
+```
+
+### Checksum mismatch
+
+Remove the cached file, keep `NETWORK_GPKG_URL` valid, and set an invalid `NETWORK_GPKG_SHA256`.
+
+Expected result:
+
+```text
+Network loading fails with a clear checksum/configuration error.
+The dashboard does not silently load a file with the wrong checksum.
+```
+
+### Streamlit resource caching
+
+Open route-finding mode and refresh the client.
+
+Expected result:
+
+```text
+load_route_network_bundle() is cached by Streamlit resource caching.
+The network bundle is not reloaded on normal client refresh.
+```
+
 ## Notes
 
 - The OpenAI cost display is only a rough estimate based on the hard-coded model pricing table in the app.
@@ -829,7 +1019,8 @@ The smoke map disables online base-map tiles by default, so it avoids OpenStreet
 - Route comparison maps are available in route-finding results and route-evaluation history.
 - Route maps now include full-network context, selected origin/destination markers, route-node marker layers, and segment highlights.
 - Route finding now includes a reusable prompt-template selector/editor with validation and local template persistence.
+- Route finding can load the GeoPackage from either a local path or a remote hosted object with cache reuse.
 - Future map improvements may include map-click OD selection, easier node-ID copying, and grouped repeated-run route comparison.
 - Keep `.env` out of Git.
 - Keep `history.db` out of Git.
-- Keep `.cache/` out of Git if you later enable remote network caching.
+- Keep `.cache/` out of Git.
