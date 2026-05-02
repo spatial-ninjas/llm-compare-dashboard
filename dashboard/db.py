@@ -85,7 +85,7 @@ def get_conn() -> sqlite3.Connection:
 
 
 def _json_dumps(value: Any) -> str | None:
-    """Serialize optional JSON data for SQLite storage."""
+    """Serialize optional JSON data for database storage."""
     if value is None:
         return None
 
@@ -93,7 +93,12 @@ def _json_dumps(value: Any) -> str | None:
 
 
 def _bool_to_int(value: Any) -> int | None:
-    """Convert optional bool-like values to SQLite integer flags."""
+    """Convert optional bool-like values to SQLite integer flags.
+
+    This remains for sqlite3-backed functions during the incremental port.
+    PostgreSQL-aware boolean handling will be added when write paths are moved
+    to SQLAlchemy.
+    """
     if value is None:
         return None
 
@@ -148,7 +153,29 @@ def _ensure_columns(
         )
 
 
+def is_postgres() -> bool:
+    """Return whether the active database backend is PostgreSQL."""
+    return get_database_backend_name() == "postgresql"
+
+
+def is_sqlite() -> bool:
+    """Return whether the active database backend is SQLite."""
+    return get_database_backend_name() == "sqlite"
+
+
 def init_db() -> None:
+    """Create or migrate the dashboard database for the active backend."""
+    if is_postgres():
+        init_postgres_db()
+    elif is_sqlite():
+        init_sqlite_db()
+    else:
+        raise RuntimeError(
+            f"Unsupported database backend: {get_database_backend_name()}"
+        )
+
+
+def init_sqlite_db() -> None:
     """Create or migrate the local dashboard database.
 
     Existing runs rows are preserved. Missing generic-history columns are
@@ -300,7 +327,153 @@ def init_db() -> None:
             )
         )
 
-        conn.commit()
+
+def init_postgres_db() -> None:
+    """Create the dashboard database schema for PostgreSQL.
+
+    PostgreSQL mode is intended for new deployed databases. Existing SQLite
+    history.db migration remains a SQLite-only concern.
+    """
+    with db_transaction() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS runs (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    prompt TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    ok BOOLEAN NOT NULL,
+                    latency_ms DOUBLE PRECISION,
+                    max_output_tokens INTEGER,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    total_tokens INTEGER,
+                    finish_status TEXT,
+                    response_text TEXT,
+                    error_text TEXT,
+                    raw_json TEXT,
+                    thinking_mode TEXT,
+                    thinking_budget INTEGER,
+                    thoughts_tokens INTEGER,
+                    attempts INTEGER
+                )
+                """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS route_prompt_templates (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT,
+                    template_text TEXT NOT NULL,
+                    ssal_profile_name TEXT,
+                    is_builtin BOOLEAN NOT NULL DEFAULT FALSE
+                )
+                """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS route_tasks (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    origin TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    ssal_hash TEXT NOT NULL,
+                    prompt_template TEXT NOT NULL,
+                    prompt_template_name TEXT,
+                    ssal_profile_name TEXT,
+                    ground_truth_path_json TEXT,
+                    ground_truth_length DOUBLE PRECISION
+                )
+                """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS route_evaluations (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    task_id BIGINT NOT NULL,
+                    run_id BIGINT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+
+                    valid_json BOOLEAN,
+                    valid_path BOOLEAN,
+                    exact_path_match BOOLEAN,
+
+                    candidate_path_json TEXT,
+                    candidate_declared_length DOUBLE PRECISION,
+                    candidate_computed_length DOUBLE PRECISION,
+
+                    ground_truth_path_json TEXT,
+                    ground_truth_length DOUBLE PRECISION,
+
+                    absolute_length_error DOUBLE PRECISION,
+                    relative_length_error DOUBLE PRECISION,
+                    declared_length_absolute_error DOUBLE PRECISION,
+                    declared_length_relative_error DOUBLE PRECISION,
+
+                    node_overlap DOUBLE PRECISION,
+                    edge_overlap DOUBLE PRECISION,
+
+                    error_text TEXT,
+                    raw_evaluation_json TEXT,
+
+                    FOREIGN KEY(task_id) REFERENCES route_tasks(id),
+                    FOREIGN KEY(run_id) REFERENCES runs(id)
+                )
+                """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_route_evaluations_task_id
+                ON route_evaluations(task_id)
+                """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_route_evaluations_run_id
+                ON route_evaluations(run_id)
+                """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_route_evaluations_created_at
+                ON route_evaluations(created_at DESC)
+                """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_route_tasks_origin_destination
+                ON route_tasks(origin, destination)
+                """
+            )
+        )
 
 
 def save_run(prompt: str, result: Dict[str, Any]) -> int:
