@@ -68,6 +68,7 @@ gcloud secrets versions add STREAMLIT_SECRETS_TOML \
 
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+DETERMINISTIC_SERVICE_URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 
 echo "Granting runtime service account access to secrets..."
 for SECRET in "${REQUIRED_SECRETS[@]}"; do
@@ -93,15 +94,17 @@ gcloud run deploy "$SERVICE" \
   --set-secrets DATABASE_URL=DATABASE_URL:latest \
   --set-secrets /app/.streamlit/secrets.toml=STREAMLIT_SECRETS_TOML:latest
 
-SERVICE_URL="$(gcloud run services describe "$SERVICE" \
+HASH_SERVICE_URL="$(gcloud run services describe "$SERVICE" \
   --region "$REGION" \
   --format='value(status.url)')"
 
 echo
 echo "Deployed:"
-echo "  $SERVICE_URL"
+echo "  Deterministic URL: $DETERMINISTIC_SERVICE_URL"
+echo "  Cloud Run status URL: $HASH_SERVICE_URL"
 echo
-echo "Google OAuth redirect URI should be:"
-echo "  $SERVICE_URL/oauth2callback"
+echo "Use this canonical Google OAuth redirect URI:"
+echo "  $DETERMINISTIC_SERVICE_URL/oauth2callback"
 echo
-echo "Make sure this exact URI is listed in Google OAuth authorized redirect URIs."
+echo "Make sure this exact URI is listed in Google OAuth authorized redirect URIs"
+echo "and in deploy/cloudrun/secrets.toml as [auth].redirect_uri."
