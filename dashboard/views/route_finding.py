@@ -649,8 +649,10 @@ def render_route_finding_view() -> None:
     except Exception as exc:
         st.error(f"Failed to load route network: {exc}")
         st.info(
-            "Check NETWORK_GPKG_PATH, NETWORK_EDGES_LAYER, and "
-            "NETWORK_NODES_LAYER in your .env file."
+            "Check NETWORK_GPKG_PATH, NETWORK_GPKG_URL, "
+            "NETWORK_GPKG_SHA256, NETWORK_CACHE_DIR, "
+            "NETWORK_EDGES_LAYER, and NETWORK_NODES_LAYER "
+            "in your .env file."
         )
         return
 
