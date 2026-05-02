@@ -49,3 +49,54 @@ def is_email_allowed(email: str | None) -> bool:
         return False
 
     return email.strip().lower() in allowed_emails
+
+
+def require_auth() -> bool:
+    """Render auth gate when OIDC is configured.
+
+    Returns True when the app should continue rendering.
+    Returns False when the caller should stop.
+    """
+    if not is_oidc_auth_configured():
+        return True
+
+    if not st.user.is_logged_in:
+        st.title("llm-compare-dashboard")
+        st.info("Sign in with Google to continue.")
+
+        if st.button("Sign in with Google"):
+            st.login("google")
+
+        return False
+
+    email = get_signed_in_email()
+
+    if not is_email_allowed(email):
+        st.title("Access denied")
+        st.error(
+            f"`{email or 'This account'}` is not allowed to access this dashboard."
+        )
+
+        if st.button("Log out"):
+            st.logout()
+
+        return False
+
+    return True
+
+
+def render_auth_sidebar() -> None:
+    """Render signed-in user details and logout button."""
+    if not is_oidc_auth_configured():
+        return
+
+    if not st.user.is_logged_in:
+        return
+
+    with st.sidebar:
+        email = get_signed_in_email()
+        if email:
+            st.caption(f"Signed in as `{email}`")
+
+        if st.button("Log out"):
+            st.logout()
