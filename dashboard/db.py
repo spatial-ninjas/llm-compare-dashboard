@@ -29,13 +29,14 @@ import os
 import json
 import sqlite3
 import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import streamlit as st
 from collections.abc import Iterator
 from contextlib import contextmanager
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, Connection
 
 import pandas as pd
@@ -57,11 +58,20 @@ def get_database_url() -> str:
 @st.cache_resource
 def get_engine() -> Engine:
     """Create and cache the SQLAlchemy engine."""
-    return create_engine(
+    engine = create_engine(
         get_database_url(),
         future=True,
         pool_pre_ping=True,
     )
+
+    if engine.dialect.name == "sqlite":
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_foreign_keys(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys = ON")
+            cursor.close()
+
+    return engine
 
 
 def get_database_backend_name() -> str:
@@ -95,14 +105,37 @@ def _json_dumps(value: Any) -> str | None:
 def _bool_to_int(value: Any) -> int | None:
     """Convert optional bool-like values to SQLite integer flags.
 
-    This remains for sqlite3-backed functions during the incremental port.
-    PostgreSQL-aware boolean handling will be added when write paths are moved
-    to SQLAlchemy.
+    This remains for sqlite3-backed route functions during the incremental
+    port. Backend-aware write paths should use ``_db_bool`` instead.
     """
     if value is None:
         return None
 
     return 1 if bool(value) else 0
+
+
+def _db_bool(value: Any) -> bool | int | None:
+    """Convert optional bool-like values for the active database backend."""
+    if value is None:
+        return None
+
+    if is_postgres():
+        return bool(value)
+
+    return 1 if bool(value) else 0
+
+
+def _json_safe_value(value: Any) -> Any:
+    """Return a JSON-serializable representation of a database value."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    return value
+
+
+def _json_safe_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Return a JSON-safe copy of a database row mapping."""
+    return {key: _json_safe_value(value) for key, value in row.items()}
 
 
 def _now() -> str:
@@ -161,6 +194,79 @@ def is_postgres() -> bool:
 def is_sqlite() -> bool:
     """Return whether the active database backend is SQLite."""
     return get_database_backend_name() == "sqlite"
+
+
+def insert_returning_id(
+    *,
+    table_name: str,
+    columns: list[str],
+    values: dict[str, Any],
+) -> int:
+    """Insert one row and return its generated primary key.
+
+    Table and column names must come from internal constants only. Do not pass
+    user-controlled identifiers here.
+    """
+    column_sql = ", ".join(columns)
+    placeholder_sql = ", ".join(f":{column}" for column in columns)
+
+    if is_postgres():
+        sql = text(
+            f"""
+            INSERT INTO {table_name} ({column_sql})
+            VALUES ({placeholder_sql})
+            RETURNING id
+            """
+        )
+
+        with db_transaction() as conn:
+            inserted_id = conn.execute(sql, values).scalar_one()
+
+        return int(inserted_id)
+
+    sql = text(
+        f"""
+        INSERT INTO {table_name} ({column_sql})
+        VALUES ({placeholder_sql})
+        """
+    )
+
+    with db_transaction() as conn:
+        result = conn.execute(sql, values)
+        inserted_id = result.lastrowid
+
+    if inserted_id is None:
+        raise RuntimeError(f"Failed to get inserted id for table: {table_name}")
+
+    return int(inserted_id)
+
+
+def fetch_all_dicts(
+    sql: str,
+    params: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Execute a SELECT query and return rows as dictionaries."""
+    with get_engine().connect() as conn:
+        rows = conn.execute(text(sql), params or {}).mappings().all()
+
+    return [dict(row) for row in rows]
+
+
+def fetch_one_dict(
+    sql: str,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Execute a SELECT query and return one row as a dictionary."""
+    with get_engine().connect() as conn:
+        row = conn.execute(text(sql), params or {}).mappings().first()
+
+    return dict(row) if row is not None else None
+
+
+def execute_statement(sql: str, params: dict[str, Any] | None = None) -> None:
+    """Execute one write statement inside a transaction."""
+    with db_transaction() as conn:
+        conn.execute(text(sql), params or {})
 
 
 def init_db() -> None:
@@ -479,9 +585,9 @@ def init_postgres_db() -> None:
 def save_run(prompt: str, result: Dict[str, Any]) -> int:
     """Save one generic provider API call and return the inserted run ID.
 
-    This table is shared by the general prompt-comparison mode and the upcoming
-    route-finding mode. Route-specific metrics should be stored separately in
-    route_evaluations and linked back through the returned run_id.
+    This table is shared by the general prompt-comparison mode and route-finding
+    mode. Route-specific metrics are stored separately in route_evaluations and
+    linked back through the returned run_id.
     """
     meta = result.get("metadata", {}) or {}
     finish_status = (
@@ -494,126 +600,127 @@ def save_run(prompt: str, result: Dict[str, Any]) -> int:
         )
     )
 
-    with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO runs (
-                created_at,
-                prompt,
-                provider,
-                model,
-                ok,
-                latency_ms,
-                max_output_tokens,
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                finish_status,
-                response_text,
-                error_text,
-                raw_json,
-                thinking_mode,
-                thinking_budget,
-                thoughts_tokens,
-                attempts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                _now(),
-                prompt,
-                result.get("provider"),
-                meta.get("model"),
-                1 if result.get("ok", False) else 0,
-                meta.get("latency_ms"),
-                meta.get("max_output_tokens"),
-                meta.get("input_tokens"),
-                meta.get("output_tokens"),
-                meta.get("total_tokens"),
-                finish_status,
-                result.get("text"),
-                result.get("error"),
-                _json_dumps(result.get("raw")),
-                meta.get("thinking_mode"),
-                meta.get("thinking_budget"),
-                meta.get("thoughts_tokens"),
-                meta.get("attempts"),
-            ),
-        )
-        conn.commit()
-        return int(cursor.lastrowid)
+    columns = [
+        "created_at",
+        "prompt",
+        "provider",
+        "model",
+        "ok",
+        "latency_ms",
+        "max_output_tokens",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "finish_status",
+        "response_text",
+        "error_text",
+        "raw_json",
+        "thinking_mode",
+        "thinking_budget",
+        "thoughts_tokens",
+        "attempts",
+    ]
+    values = {
+        "created_at": _now(),
+        "prompt": prompt,
+        "provider": result.get("provider"),
+        "model": meta.get("model"),
+        "ok": _db_bool(result.get("ok", False)),
+        "latency_ms": meta.get("latency_ms"),
+        "max_output_tokens": meta.get("max_output_tokens"),
+        "input_tokens": meta.get("input_tokens"),
+        "output_tokens": meta.get("output_tokens"),
+        "total_tokens": meta.get("total_tokens"),
+        "finish_status": finish_status,
+        "response_text": result.get("text"),
+        "error_text": result.get("error"),
+        "raw_json": _json_dumps(result.get("raw")),
+        "thinking_mode": meta.get("thinking_mode"),
+        "thinking_budget": meta.get("thinking_budget"),
+        "thoughts_tokens": meta.get("thoughts_tokens"),
+        "attempts": meta.get("attempts"),
+    }
+
+    return insert_returning_id(
+        table_name="runs",
+        columns=columns,
+        values=values,
+    )
 
 
 def load_saved_runs(limit: int = 100) -> pd.DataFrame:
     """Load recent generic provider runs for the saved-history table."""
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                id,
-                created_at,
-                provider,
-                model,
-                ok,
-                latency_ms,
-                max_output_tokens,
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                finish_status,
-                thinking_mode,
-                thinking_budget,
-                thoughts_tokens,
-                attempts,
-                prompt,
-                response_text,
-                error_text
-            FROM runs
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+    rows = fetch_all_dicts(
+        """
+        SELECT
+            id,
+            created_at,
+            provider,
+            model,
+            ok,
+            latency_ms,
+            max_output_tokens,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            finish_status,
+            thinking_mode,
+            thinking_budget,
+            thoughts_tokens,
+            attempts,
+            prompt,
+            response_text,
+            error_text
+        FROM runs
+        ORDER BY id DESC
+        LIMIT :limit
+        """,
+        {"limit": limit},
+    )
 
     if not rows:
         return pd.DataFrame()
 
-    return pd.DataFrame([dict(row) for row in rows])
+    return pd.DataFrame(rows)
 
 
 def load_run_by_id(run_id: int) -> Optional[Dict[str, Any]]:
     """Load one generic provider run, including parsed raw response JSON."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
+    data = fetch_one_dict(
+        "SELECT * FROM runs WHERE id = :run_id",
+        {"run_id": run_id},
+    )
 
-    if row is None:
+    if data is None:
         return None
 
-    data = dict(row)
     raw_json = data.get("raw_json")
     if raw_json:
         try:
             data["raw_json"] = json.loads(raw_json)
         except Exception:
             pass
+
     return data
 
 
 def delete_all_runs() -> None:
-    """Delete all generic provider runs from local history."""
-    with get_conn() as conn:
-        conn.execute("DELETE FROM runs")
-        conn.commit()
+    """Delete all generic provider runs from history.
+
+    This only affects the generic runs table. Route-linked rows may prevent this
+    after route evaluations have been saved, depending on foreign-key state.
+    """
+    execute_statement("DELETE FROM runs")
 
 
 def export_runs_json() -> str:
     """Export generic provider run history as formatted JSON text."""
-    with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
-    return json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2)
-
+    rows = fetch_all_dicts("SELECT * FROM runs ORDER BY id DESC")
+    return json.dumps(
+        [_json_safe_row(row) for row in rows],
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def list_route_prompt_templates() -> list[dict[str, Any]]:
@@ -624,50 +731,41 @@ def list_route_prompt_templates() -> list[dict[str, Any]]:
     user-defined templates. The is_builtin column is kept for future migration
     flexibility.
     """
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                name,
-                description,
-                template_text,
-                ssal_profile_name,
-                is_builtin
-            FROM route_prompt_templates
-            ORDER BY is_builtin DESC, updated_at DESC, name ASC
-            """
-        ).fetchall()
-
-    return [dict(row) for row in rows]
+    return fetch_all_dicts(
+        """
+        SELECT
+            id,
+            created_at,
+            updated_at,
+            name,
+            description,
+            template_text,
+            ssal_profile_name,
+            is_builtin
+        FROM route_prompt_templates
+        ORDER BY is_builtin DESC, updated_at DESC, name ASC
+        """
+    )
 
 
 def load_route_prompt_template(template_id: int) -> dict[str, Any] | None:
     """Load one saved route prompt template by ID."""
-    with get_conn() as conn:
-        row = conn.execute(
-            """
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                name,
-                description,
-                template_text,
-                ssal_profile_name,
-                is_builtin
-            FROM route_prompt_templates
-            WHERE id = ?
-            """,
-            (template_id,),
-        ).fetchone()
-
-    if row is None:
-        return None
-
-    return dict(row)
+    return fetch_one_dict(
+        """
+        SELECT
+            id,
+            created_at,
+            updated_at,
+            name,
+            description,
+            template_text,
+            ssal_profile_name,
+            is_builtin
+        FROM route_prompt_templates
+        WHERE id = :template_id
+        """,
+        {"template_id": template_id},
+    )
 
 
 def create_route_prompt_template(
@@ -680,33 +778,30 @@ def create_route_prompt_template(
 ) -> int:
     """Create one saved route prompt template and return its ID."""
     timestamp = _now()
+    columns = [
+        "created_at",
+        "updated_at",
+        "name",
+        "description",
+        "template_text",
+        "ssal_profile_name",
+        "is_builtin",
+    ]
+    values = {
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "name": name,
+        "description": description,
+        "template_text": template_text,
+        "ssal_profile_name": ssal_profile_name,
+        "is_builtin": _db_bool(is_builtin) or (False if is_postgres() else 0),
+    }
 
-    with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO route_prompt_templates (
-                created_at,
-                updated_at,
-                name,
-                description,
-                template_text,
-                ssal_profile_name,
-                is_builtin
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                timestamp,
-                timestamp,
-                name,
-                description,
-                template_text,
-                ssal_profile_name,
-                _bool_to_int(is_builtin) or 0,
-            ),
-        )
-        conn.commit()
-        return int(cursor.lastrowid)
+    return insert_returning_id(
+        table_name="route_prompt_templates",
+        columns=columns,
+        values=values,
+    )
 
 
 def update_route_prompt_template(
@@ -722,56 +817,32 @@ def update_route_prompt_template(
     Omitted fields are left unchanged. Passing ``description=None`` or
     ``ssal_profile_name=None`` preserves the current value.
     """
-    assignments: list[str] = ["updated_at = ?"]
-    values: list[Any] = [_now()]
+    assignments: list[str] = ["updated_at = :updated_at"]
+    values: dict[str, Any] = {"updated_at": _now(), "template_id": template_id}
 
     if name is not None:
-        assignments.append("name = ?")
-        values.append(name)
+        assignments.append("name = :name")
+        values["name"] = name
 
     if description is not None:
-        assignments.append("description = ?")
-        values.append(description)
+        assignments.append("description = :description")
+        values["description"] = description
 
     if template_text is not None:
-        assignments.append("template_text = ?")
-        values.append(template_text)
+        assignments.append("template_text = :template_text")
+        values["template_text"] = template_text
 
     if ssal_profile_name is not None:
-        assignments.append("ssal_profile_name = ?")
-        values.append(ssal_profile_name)
+        assignments.append("ssal_profile_name = :ssal_profile_name")
+        values["ssal_profile_name"] = ssal_profile_name
 
-    values.append(template_id)
-
-    with get_conn() as conn:
-        conn.execute(
-            f"""
-            UPDATE route_prompt_templates
-            SET {", ".join(assignments)}
-            WHERE id = ?
-            """,
-            values,
-        )
-        conn.commit()
-
-
-def duplicate_route_prompt_template(
-    *,
-    template_id: int,
-    name: str,
-) -> int:
-    """Duplicate a saved route prompt template under a new name."""
-    source = load_route_prompt_template(template_id)
-
-    if source is None:
-        raise ValueError(f"Route prompt template not found: {template_id}")
-
-    return create_route_prompt_template(
-        name=name,
-        description=source.get("description"),
-        template_text=source["template_text"],
-        ssal_profile_name=source.get("ssal_profile_name"),
-        is_builtin=False,
+    execute_statement(
+        f"""
+        UPDATE route_prompt_templates
+        SET {", ".join(assignments)}
+        WHERE id = :template_id
+        """,
+        values,
     )
 
 
@@ -780,12 +851,16 @@ def delete_route_prompt_template(template_id: int) -> None:
 
     Built-in templates are protected by the is_builtin flag.
     """
-    with get_conn() as conn:
-        conn.execute(
-            "DELETE FROM route_prompt_templates WHERE id = ? AND is_builtin = 0",
-            (template_id,),
-        )
-        conn.commit()
+    execute_statement(
+        """
+        DELETE FROM route_prompt_templates
+        WHERE id = :template_id AND is_builtin = :is_builtin
+        """,
+        {
+            "template_id": template_id,
+            "is_builtin": _db_bool(False),
+        },
+    )
 
 
 def save_route_task(
