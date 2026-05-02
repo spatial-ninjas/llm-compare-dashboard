@@ -1,6 +1,6 @@
 # llm-compare-dashboard
 
-Current release: **v0.4.1**
+Current release: **v0.5.0**
 
 This project is a Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
 
@@ -10,32 +10,28 @@ The app can be run locally on your own computer and opened in your browser:
 streamlit run app.py
 ```
 
-It can also be configured for shared deployment by loading the route-network GeoPackage from a hosted object URL and by storing dashboard persistence in a managed PostgreSQL database.
+It can also be configured for shared deployment by loading the route-network GeoPackage from a hosted object URL, storing dashboard persistence in a managed PostgreSQL database, and enabling Google OIDC sign-in with an email allowlist.
 
 ![Main dashboard view](docs/screenshot-main.png)
 
 > [!IMPORTANT]
-> Never commit API keys, `.env`, `history.db`, `.cache/`, or any other secrets/local state to Git.
+> Never commit API keys, `.env`, `.streamlit/secrets.toml`, `history.db`, `.cache/`, or any other secrets/local state to Git.
 > If an API key is accidentally committed, assume it is compromised, revoke it, and generate a new one.
 
 ## Version note
 
-This repository is currently at `v0.4.1`.
+This repository is currently at `v0.5.0`.
 
-This patch release builds on the `v0.4.0` route prompt-template workflow by adding remote GeoPackage loading with local cache fallback for route-finding deployments.
+This release builds on `v0.4.1` by adding managed database persistence and optional Google OIDC authentication for shared dashboard deployments.
 
 > [!NOTE]
-> The dashboard installs the shared research code from the published `spatial-ninjas-research` package. Route-finding mode can now load the GeoPackage network either from a local path or from a remote hosted object with local cache reuse.
+> The dashboard keeps local development simple by default: SQLite is used when `DATABASE_URL` is unset, and authentication is disabled when Streamlit OIDC secrets are not configured.
 >
-> For local development, the easiest setup is still often to keep the `research` repo as a sibling folder:
+> For shared deployment, configure:
 >
-> ```text
-> spatial-ninjas/
->   research/
->   llm-compare-dashboard/
-> ```
->
-> In that setup, `NETWORK_GPKG_PATH` can point to the GeoPackage inside the sibling `research` checkout. This sibling checkout is needed for route-network data convenience, not for importing the Python research package.
+> - `DATABASE_URL` for PostgreSQL persistence
+> - Google OIDC secrets through Streamlit secrets
+> - `AUTH_ALLOWED_EMAILS` to restrict access to selected team members
 
 ## Concepts used in this README
 
@@ -298,6 +294,31 @@ This keeps the API-call workflow separate from result review. The history view i
 
 ## Release notes
 
+### v0.5.0
+
+Added managed database persistence and optional Google OIDC authentication for shared dashboard deployments.
+
+This release moves the dashboard closer to team/shared deployment. It keeps local development simple with SQLite and no-auth defaults, while allowing deployed instances to use PostgreSQL persistence and Google sign-in with an email allowlist.
+
+Highlights:
+
+- Added `DATABASE_URL`-configured persistence.
+- Kept local SQLite `history.db` as the default when `DATABASE_URL` is unset.
+- Added PostgreSQL support through SQLAlchemy.
+- Ported provider runs, prompt templates, route tasks, route evaluations, route history, and exports to the shared database layer.
+- Added optional Google OIDC sign-in using Streamlit authentication.
+- Added `AUTH_ALLOWED_EMAILS` allowlist support.
+- Added signed-in user display and logout flow.
+- Added Authlib dependency for Streamlit OIDC login.
+- Updated README and `.env.example` for database and authentication setup.
+
+Notes:
+
+- Existing local `history.db` data is not automatically migrated to PostgreSQL.
+- Authentication is disabled when Streamlit OIDC secrets are not configured.
+- If `AUTH_ALLOWED_EMAILS` is set without OIDC secrets, the app should show a configuration warning rather than silently relying on the allowlist.
+- Route evaluation semantics are unchanged.
+
 ### v0.4.1
 
 Added remote GeoPackage loading with local cache fallback for route-finding deployments.
@@ -476,10 +497,11 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-This installs the published research package:
+This installs the published research package and the dashboard dependencies, including `Authlib` for Streamlit OIDC authentication:
 
 ```txt
 spatial-ninjas-research==0.1.0
+Authlib>=1.3.2
 ```
 
 To verify that the dashboard is using the installed package:
@@ -503,13 +525,15 @@ pip install -e ../research
 
 ### 4. Run smoke tests for imports
 
-After installing dependencies, verify that the dashboard can import the shared packages:
+After installing dependencies, verify that the dashboard can import the shared packages and auth dependency:
 
 ```bash
+python -c "import authlib; print('authlib ok')"
 python -c "from research.graph import build_graph_from_ssal; print('graph ok')"
 python -c "from research.evaluation import evaluate_route_response; print('evaluation ok')"
 python -c "from research.network_loader import load_network_bundle_from_gpkg; print('network loader ok')"
 python -c "from research.network_loader import fetch_or_reuse_cached_file; print('network cache helper ok')"
+python -c "from dashboard.auth import require_auth; print('auth ok')"
 python -c "from dashboard.views.general import render_general_view; print('general view ok')"
 python -c "from dashboard.views.route_finding import render_route_finding_view; print('route view ok')"
 python -c "from dashboard.views.route_history import render_route_history_view; print('route history view ok')"
@@ -560,6 +584,13 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # Leave empty to use local SQLite history.db.
 # Set to a PostgreSQL URL for deployed persistence.
 DATABASE_URL=
+
+# Authentication
+#
+# Comma-separated list of allowed signed-in email addresses.
+# Only used when OIDC auth is configured through Streamlit secrets.
+# Leave empty to allow any authenticated user.
+AUTH_ALLOWED_EMAILS=
 
 # Route-finding network data
 #
@@ -741,6 +772,73 @@ DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
 ```
 
 Existing local `history.db` data is not automatically migrated to PostgreSQL. Use JSON exports or a separate migration script if old local data needs to be preserved.
+
+
+## Authentication configuration
+
+Authentication is optional. If Streamlit OIDC auth is not configured, the dashboard runs without login. This keeps local development simple.
+
+For shared deployment, configure Google OIDC sign-in through Streamlit secrets and set an email allowlist with `AUTH_ALLOWED_EMAILS`.
+
+Allowlist configuration in `.env` or platform environment variables:
+
+```env
+AUTH_ALLOWED_EMAILS=person1@example.com,person2@example.com
+```
+
+Behavior:
+
+```text
+OIDC auth not configured and AUTH_ALLOWED_EMAILS empty
+  -> local development mode, no login required
+
+OIDC auth not configured but AUTH_ALLOWED_EMAILS set
+  -> configuration warning, because the allowlist cannot be enforced without OIDC
+
+OIDC auth configured and AUTH_ALLOWED_EMAILS empty
+  -> Google sign-in required, any signed-in Google user can access the dashboard
+
+OIDC auth configured and AUTH_ALLOWED_EMAILS set
+  -> Google sign-in required, only listed email addresses can access the dashboard
+```
+
+For shared deployments, set `AUTH_ALLOWED_EMAILS` explicitly.
+
+Google OIDC secrets should be configured through `.streamlit/secrets.toml` locally or platform secrets in deployment. The real secrets file must not be committed.
+
+Local example:
+
+```toml
+[auth]
+redirect_uri = "http://localhost:8501/oauth2callback"
+cookie_secret = "replace-with-a-long-random-secret"
+
+[auth.google]
+client_id = "your-google-oauth-client-id"
+client_secret = "your-google-oauth-client-secret"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+```
+
+For deployment, replace `redirect_uri` with:
+
+```text
+https://your-dashboard-url/oauth2callback
+```
+
+The Google OAuth client must include the same redirect URI in its authorized redirect URI list. The `client_secret` is the OAuth client secret from Google Cloud, and `cookie_secret` should be a separate long random value. You can generate a cookie secret with:
+
+```bash
+python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+```
+
+The authentication flow requires Authlib. It should be installed through `requirements.txt`; if `st.login()` raises an Authlib error, reinstall dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
 
 
 ## Route prompt template workflow
@@ -952,9 +1050,11 @@ llm-compare-dashboard/
   .env.example                   Environment variable template
   history.db                     Local SQLite DB, created automatically when DATABASE_URL is unset
   .cache/                        Optional local cache for remotely fetched network data, ignored by Git
+  .streamlit/secrets.toml        Local Streamlit OIDC secrets, ignored by Git if used
 
   dashboard/
     api_clients.py               OpenAI/Gemini API wrappers and retry behavior
+    auth.py                      Optional Google OIDC auth gate and email allowlist helpers
     db.py                        SQLite/PostgreSQL persistence helpers and schema initialization
     network.py                   Local/remote NetworkBundle loading and GeoPackage cache resolution
     route_prompts.py             Built-in route prompt template, SSAL profile metadata, and validation
@@ -1062,7 +1162,10 @@ The network bundle is not reloaded on normal client refresh.
 - Route finding now includes a reusable prompt-template selector/editor with validation and local template persistence.
 - Route finding can load the GeoPackage from either a local path or a remote hosted object with cache reuse.
 - Dashboard persistence uses local SQLite by default and can use PostgreSQL when `DATABASE_URL` is configured.
+- Google OIDC authentication is optional and is enabled only when Streamlit auth secrets are configured.
+- `AUTH_ALLOWED_EMAILS` only enforces access control when OIDC auth is configured.
 - Future map improvements may include map-click OD selection, easier node-ID copying, and grouped repeated-run route comparison.
 - Keep `.env` out of Git.
+- Keep `.streamlit/secrets.toml` out of Git.
 - Keep `history.db` out of Git.
 - Keep `.cache/` out of Git.
