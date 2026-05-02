@@ -2,7 +2,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 
-APP_VERSION = "v0.3.1"
+APP_VERSION = "v0.5.0"
 
 load_dotenv()
 
@@ -10,6 +10,7 @@ from dashboard.db import init_db  # noqa: E402
 from dashboard.views.general import render_general_view  # noqa: E402
 from dashboard.views.route_finding import render_route_finding_view  # noqa: E402
 from dashboard.views.route_history import render_route_history_view  # noqa: E402
+from dashboard.auth import require_auth, render_auth_sidebar  # noqa: E402
 
 
 st.set_page_config(
@@ -18,6 +19,11 @@ st.set_page_config(
 )
 
 init_db()
+
+if not require_auth():
+    st.stop()
+
+render_auth_sidebar()
 
 st.title("OpenAI vs Gemini Comparator")
 
