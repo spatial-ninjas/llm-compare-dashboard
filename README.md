@@ -1,6 +1,6 @@
 # llm-compare-dashboard
 
-Current release: **v0.3.1**
+Current release: **v0.4.0**
 
 This project is a local Streamlit app for comparing OpenAI and Gemini responses, metadata, saved run history, and SSAL-native route-finding evaluations.
 
@@ -18,33 +18,67 @@ streamlit run app.py
 
 ## Version note
 
-This repository is currently at `v0.3.1`.
+This repository is currently at `v0.4.0`.
 
-This release builds on the `v0.3.0` route-map comparison workflow by adding full-network context, selected origin/destination markers, route-node inspection, and route-focused map bounds.
+This release builds on the `v0.3.1` route-map workflow by adding a reusable route prompt-template workflow for route-finding experiments.
+
+## Concepts used in this README
+
+**SSAL** means **Simplified Semantic Adjacency List**. In this project, it is a text representation of a road/routing network. Each node lists its outgoing neighbouring nodes and edge attributes such as length, street name, direction flag, and coordinates. The dashboard sends this SSAL text to the model as route-finding context.
+
+**origin–destination pair** means **origin–destination node pair**. It is the selected start node and target node for one route-finding task.
+
+**Ground truth** means the deterministic shortest route computed by the shared research-side graph code, currently using Dijkstra shortest path over the loaded SSAL-derived graph.
+
+**Candidate route** means the route returned by a model response. The dashboard compares candidate routes against the ground-truth route and highlights invalid, missing, or diverging segments when evaluator output is available.
+
+## What the dashboard does
+
+The dashboard has three modes:
+
+```text
+General prompt comparison
+  Send the same free-form prompt to OpenAI and Gemini.
+
+Route finding
+  Select an origin–destination pair, generate an SSAL-based route prompt, run both providers,
+  evaluate the returned routes, and save the route-specific metrics.
+
+Route evaluation history
+  Review saved route evaluations, filter previous runs, inspect rows,
+  replay routes on maps, and export route-history data.
+```
 
 Current dashboard capabilities include:
 
-- general OpenAI/Gemini prompt comparison
-- persistent local SQLite history
-- editable local dependency on the sibling `research` repo
-- SSAL-native route-finding evaluation mode
-- local `NetworkBundle` loading
-- route prompt generation
-- parallel provider calls
-- route evaluation display and JSON export
-- dedicated route-evaluation history view
-- compact saved-evaluation overview table
-- selected-evaluation summary card
-- route segment inspection using saved evaluator output
-- reusable Folium route visualisation
-- pre-call route map preview in route-finding mode
-- full-network context for route maps
-- selected origin/destination map markers
-- post-evaluation OpenAI/Gemini route maps
-- route-history map replay for saved evaluations
-- highlighted invalid, missing, and diverging route segments
-- toggleable full-network, selected-node, candidate-route, ground-truth-route, route-node, highlight, and metadata map layers
-- indexed route-node tooltips for candidate and reference routes
+- **General provider comparison**
+  - side-by-side OpenAI/Gemini prompt comparison
+  - model/settings controls, response metadata, token usage, latency, and retry info
+  - persistent local SQLite history and JSON export
+
+- **SSAL-native route finding**
+  - local `NetworkBundle` loading from the sibling `research` repo
+  - Dijkstra ground-truth route generation
+  - parallel OpenAI/Gemini route calls
+  - route evaluation with saved metrics and JSON export
+
+- **Route prompt-template workflow**
+  - built-in and saved prompt-template selector
+  - editable prompt-template panel with validation before provider calls
+  - save-as-new, update-selected, reset-to-default, and unsaved-change indicators
+  - prompt template/profile metadata stored with saved route tasks
+
+- **Route visualisation**
+  - pre-call reference-route map preview
+  - full-network context, selected origin/destination markers, and route-node tooltips
+  - post-evaluation OpenAI/Gemini route maps
+  - highlighted invalid, missing, and diverging route segments
+
+- **Route evaluation history**
+  - saved route-evaluation table with filters
+  - selected-evaluation summary cards
+  - segment inspection from saved evaluator output
+  - map replay and route-history JSON export
 
 The route-finding mode requires the sibling `research` repository at `v0.1.0` or a compatible version. In the expected local layout, the dashboard installs it through:
 
@@ -54,33 +88,21 @@ The route-finding mode requires the sibling `research` repository at `v0.1.0` or
 
 ## Why this exists
 
-The dashboard has three modes:
-
-```text
-General prompt comparison
-  Send the same free-form prompt to OpenAI and Gemini.
-
-Route finding
-  Generate an SSAL route prompt, run both providers, evaluate the returned routes,
-  and persist route-specific metrics.
-
-Route evaluation history
-  Review saved route evaluations, filter previous runs, inspect rows,
-  and export route-history data.
-```
-
-The goal is to make model comparison reproducible. Instead of manually copying prompts between providers or writing one-off scripts, the dashboard lets you:
+The goal is to make model comparison and route-navigation experiments reproducible. Instead of manually copying prompts between providers or writing one-off scripts, the dashboard lets you:
 
 - run the same prompt against OpenAI and Gemini
 - inspect responses, metadata, token usage, latency, and retry attempts
 - save provider calls to a local SQLite history
 - export saved general prompt history as JSON
 - load an SSAL route network from the sibling `research` repo
+- save and reuse route prompt templates for repeated experiments
+- validate route prompt placeholders before provider calls
+- record prompt template and SSAL profile metadata with route tasks
 - compare model-generated routes against Dijkstra ground truth
 - review saved route evaluations in a dedicated history view
 - inspect saved routes as ordered node-to-node segments
 - compare candidate and reference routes visually on Folium maps
-- explore selected route tasks with full-network context and OD markers
+- explore selected route tasks with full-network context and origin/destination markers
 - inspect candidate/reference route nodes with indexed map tooltips
 - replay saved route evaluations with route maps and segment highlights
 - export route-history rows for offline research evaluation
@@ -148,35 +170,49 @@ one Gemini row
 
 ### Route finding
 
-The route-finding mode loads the configured SSAL-native routing network, lets you choose an origin and destination, generates a route-finding prompt, calls both providers, evaluates the returned routes, and saves the results.
+The route-finding mode loads the configured SSAL-native routing network, lets you choose an origin and destination node, generates a route-finding prompt, calls both providers, evaluates the returned routes, and saves the results.
 
-It includes:
+It is organized around four main workflows:
 
-- local `NetworkBundle` loading from a GeoPackage
-- cached network loading with `st.cache_resource`
-- default origin node `1004552350`
-- default destination node `9713069615`
-- Dijkstra ground-truth path, length, and edge-count display
-- pre-call map preview for the selected Dijkstra reference route
-- full-network map context in route preview
-- selected origin/destination markers
-- toggleable Dijkstra reference route-node markers
-- editable route prompt template in a collapsed debug panel
-- generated prompt preview and download
-- OpenAI and Gemini API calls in parallel
-- status steps while the route test runs
-- provider finished/failed messages with attempt counts
-- route evaluation using `research.evaluation.evaluate_route_response()`
-- route task persistence
-- route evaluation persistence
-- detailed provider/evaluation cards
-- side-by-side OpenAI and Gemini route maps after evaluation
-- candidate route and ground-truth route overlays
-- selected origin/destination markers on provider result maps
-- toggleable candidate and ground-truth route-node markers
-- highlighted invalid, missing, and diverging candidate segments when evaluator output is available
-- route-focused bounds for provider result maps
-- current route-test JSON export
+- **Route setup and reference route**
+  - local `NetworkBundle` loading from a GeoPackage
+  - cached network loading with `st.cache_resource`
+  - default origin node `1004552350`
+  - default destination node `9713069615`
+  - Dijkstra ground-truth path, length, and edge-count display
+
+- **Prompt-template workflow**
+  - dedicated right-side route prompt-template panel
+  - built-in default route prompt template
+  - saved local route prompt-template selector
+  - editable route prompt template
+  - prompt-template validation before provider calls
+  - save-as-new and update-selected template controls
+  - unsaved-change indicators for edited templates
+  - reset-to-built-in-default control
+  - generated prompt preview and download
+
+- **Route maps**
+  - pre-call map preview for the selected Dijkstra reference route
+  - full-network map context in route preview
+  - selected origin/destination markers
+  - toggleable Dijkstra reference route-node markers
+  - side-by-side OpenAI and Gemini route maps after evaluation
+  - candidate route and ground-truth route overlays
+  - selected origin/destination markers on provider result maps
+  - toggleable candidate and ground-truth route-node markers
+  - highlighted invalid, missing, and diverging candidate segments when evaluator output is available
+  - route-focused bounds for provider result maps
+
+- **Provider calls, evaluation, and persistence**
+  - OpenAI and Gemini API calls in parallel
+  - status steps while the route test runs
+  - provider finished/failed messages with attempt counts
+  - route evaluation using `research.evaluation.evaluate_route_response()`
+  - route task persistence with prompt template/profile metadata
+  - route evaluation persistence
+  - detailed provider/evaluation cards
+  - current route-test JSON export
 
 A route result is shown as satisfactory only when:
 
@@ -193,25 +229,31 @@ Other evaluated results are shown as needing review rather than as green success
 
 The route evaluation history mode is for reviewing saved route-specific evaluation rows without running new provider calls.
 
-It includes:
+It is organized around three main workflows:
 
-- compact saved-evaluation overview table loaded from local SQLite history
-- provider filter
-- satisfactory / needs-review status filter
-- selected-evaluation summary card
-- route-level metrics such as candidate length, ground-truth length, relative length error, node overlap, and edge overlap
-- candidate/reference edge counts
-- route segment inspection table
-- raw evaluator output expander for debugging
-- map replay for selected saved evaluations
-- full-network context in replay maps
-- selected origin/destination markers in replay maps
-- candidate route, ground-truth route, route-node markers, and segment highlights as separate toggleable map layers
-- indexed candidate and ground-truth route-node tooltips
-- route-focused bounds for replay maps
-- toggleable network metadata overlay inside rendered maps
-- detailed history table in a collapsed expander
-- saved route-history JSON export for offline research evaluation
+- **Saved evaluation browsing**
+  - compact saved-evaluation overview table loaded from local SQLite history
+  - provider filter
+  - satisfactory / needs-review status filter
+  - detailed history table in a collapsed expander
+  - saved route-history JSON export for offline research evaluation
+
+- **Selected evaluation summary**
+  - selected-evaluation summary card
+  - route-level metrics such as candidate length, ground-truth length, relative length error, node overlap, and edge overlap
+  - candidate/reference edge counts
+  - prompt template and SSAL profile metadata where available
+
+- **Route inspection and replay**
+  - route segment inspection table
+  - raw evaluator output expander for debugging
+  - map replay for selected saved evaluations
+  - full-network context in replay maps
+  - selected origin/destination markers in replay maps
+  - candidate route, ground-truth route, route-node markers, and segment highlights as separate toggleable map layers
+  - indexed candidate and ground-truth route-node tooltips
+  - route-focused bounds for replay maps
+  - toggleable network metadata overlay inside rendered maps
 
 The segment inspection table breaks a saved candidate route into ordered node-to-node segments and labels each segment using evaluator output saved in `raw_evaluation_json.candidate_validation`.
 
@@ -231,6 +273,37 @@ This keeps the API-call workflow separate from result review. The history view i
 
 ## Release notes
 
+### v0.4.0
+
+Added a reusable route prompt-template workflow for route-finding experiments.
+
+Breaking change:
+
+- the built-in default route prompt was updated to match the current SSAL representation
+- new route-finding runs may not be directly comparable with earlier runs that used the old default prompt wording
+
+Highlights:
+
+- built-in default route prompt now describes the current SSAL shape correctly
+- current default SSAL profile is named and shown in the UI
+- route prompt templates are validated before provider calls
+- validation catches missing required placeholders, unknown placeholders, and malformed braces
+- route-finding mode now has a dedicated right-side prompt-template panel
+- built-in default template remains available as a selectable option
+- user-created prompt templates can be saved locally and reused
+- saved templates can be edited and updated
+- edited templates can be saved as new prompt variants
+- unsaved template edits are highlighted in the UI
+- generated prompt preview and download are preserved next to the template editor
+- route tasks store the selected prompt template name, template snapshot, SSAL profile name, and SSAL hash
+- route-history display/export includes prompt/profile metadata where useful
+
+Notes:
+
+- this release focuses on prompt-template experiments, not selectable SSAL-profile generation
+- the dashboard records the SSAL profile associated with a template/run, but still uses the current fixed SSAL representation
+- selectable/customisable SSAL profiles are left for a follow-up issue
+
 ### v0.3.1
 
 Added the first usable network-exploration and route-node inspection workflow on top of the `v0.3.0` map comparison release.
@@ -248,7 +321,7 @@ Highlights:
 - route-node tooltips include node ID, route index, route type, and relevant provider/evaluation metadata
 - route-history replay maps now have parity with route-finding maps:
   - full-network context
-  - selected OD markers
+  - selected origin/destination markers
   - candidate/reference route-node layers
   - segment highlights
 - map bounds behavior was refined:
@@ -282,7 +355,7 @@ Known remaining map work at the time of `v0.3.0`:
 
 - full loaded-network layer was not implemented yet
 - route node markers and node-ID inspection/copying were still future work
-- map-based OD-pair exploration was not complete yet
+- map-based origin–destination-pair exploration was not complete yet
 
 These items are addressed at a first usable level in `v0.3.1`.
 
@@ -472,13 +545,24 @@ When the route mode is opened, it loads the configured GeoPackage into a cached 
 
 If `NETWORK_GPKG_PATH` is missing or invalid, the route-finding view shows a clear Streamlit error explaining which network configuration should be checked.
 
-## Route prompt template
+## Route prompt template workflow
 
 The route-finding prompt is generated from:
 
 ```text
 prompt_template + ssal_text + origin + destination
 ```
+
+Route finding mode includes a dedicated prompt-template panel. It supports:
+
+- selecting the built-in default prompt template
+- selecting locally saved prompt templates
+- editing the current template text
+- validating placeholders before provider calls
+- saving the current editor text as a new template
+- updating an existing saved template
+- resetting the editor to the built-in default
+- previewing and downloading the generated prompt
 
 The default prompt asks the model to return strict JSON using the route schema expected by the research evaluator:
 
@@ -506,17 +590,34 @@ The editable prompt template supports these placeholders:
 
 Literal JSON or SSAL braces must be escaped as `{{` and `}}`.
 
-The route task stores `prompt_template`, not the fully expanded prompt with the full SSAL text. This avoids duplicating large SSAL payloads repeatedly in the route task table.
+Template validation runs before provider calls. The route test button is disabled if the current template is invalid. Validation catches:
+
+- missing required placeholders
+- unknown placeholders
+- malformed formatting braces
+
+The current default SSAL profile is:
+
+```text
+default_length_name_oneway_coords
+```
+
+The dashboard records the SSAL profile name with saved route tasks. It does not yet let the user choose or regenerate alternative SSAL representations. Selectable/customisable SSAL profiles are planned as follow-up work.
+
+Reusable templates do not store full SSAL text. Saved route tasks store a snapshot of the actual prompt template text used for the run, so old experiments remain reproducible even if a saved template is later edited.
 
 ## Persistence model
 
 The app creates `history.db` in the same folder as `app.py`.
 
-The persistence model separates generic provider calls from route-specific evaluation data:
+The persistence model separates generic provider calls, reusable prompt templates, and route-specific evaluation data:
 
 ```text
 runs
   one row per OpenAI/Gemini API call
+
+route_prompt_templates
+  one row per saved reusable route prompt template
 
 route_tasks
   one row per route prompt/task
@@ -546,6 +647,19 @@ Stores:
 
 `save_run()` returns the inserted run ID so route evaluations can link back to provider calls.
 
+### `route_prompt_templates`
+
+Stores reusable local route prompt templates:
+
+- name
+- description
+- template text
+- expected SSAL profile name
+- creation/update timestamps
+- built-in flag reserved for future migration flexibility
+
+The built-in default prompt is kept in `dashboard.route_prompts` rather than seeded into SQLite.
+
 ### `route_tasks`
 
 Stores one route-finding task:
@@ -553,7 +667,9 @@ Stores one route-finding task:
 - origin
 - destination
 - SSAL hash
-- prompt template
+- prompt template snapshot
+- prompt template name
+- SSAL profile name
 - Dijkstra ground-truth path
 - Dijkstra ground-truth length
 
@@ -611,6 +727,8 @@ The saved route-history export is compatible with the research repo’s offline 
   "origin": "1004552350",
   "destination": "9713069615",
   "ssal_hash": "abc123...",
+  "prompt_template_name": "Built-in default route prompt",
+  "ssal_profile_name": "default_length_name_oneway_coords",
   "prompt": "...",
   "response_text": "{...model route JSON...}",
   "error_text": null
@@ -636,9 +754,9 @@ llm-compare-dashboard/
 
   dashboard/
     api_clients.py               OpenAI/Gemini API wrappers and retry behavior
-    db.py                        SQLite persistence helpers
+    db.py                        SQLite persistence helpers and prompt-template storage
     network.py                   Local NetworkBundle loading
-    route_prompts.py             Route prompt template and builder
+    route_prompts.py             Built-in route prompt template, SSAL profile metadata, and validation
     route_visualization.py       Reusable Folium route visualisation helpers
     route_map_helpers.py         Shared map embedding, network-layer, and segment-highlight helpers
     views/
@@ -674,7 +792,8 @@ The smoke map disables online base-map tiles by default, so it avoids OpenStreet
 - The dashboard shows per-call usage metadata. It does not show a provider-wide “tokens left” counter.
 - Saved-history export is available in the general and route-evaluation history views, but destructive “clear history” controls are intentionally not shown in the current UI.
 - Route comparison maps are available in route-finding results and route-evaluation history.
-- Route maps now include full-network context, selected OD markers, route-node marker layers, and segment highlights.
+- Route maps now include full-network context, selected origin/destination markers, route-node marker layers, and segment highlights.
+- Route finding now includes a reusable prompt-template selector/editor with validation and local template persistence.
 - Future map improvements may include map-click OD selection, easier node-ID copying, and grouped repeated-run route comparison.
 - Keep `.env` out of Git.
 - Keep `history.db` out of Git.
