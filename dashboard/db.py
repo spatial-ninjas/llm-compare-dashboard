@@ -27,7 +27,6 @@ later edited, renamed, or deleted.
 
 import os
 import json
-import sqlite3
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -86,32 +85,12 @@ def db_transaction() -> Iterator[Connection]:
         yield conn
 
 
-def get_conn() -> sqlite3.Connection:
-    """Open a SQLite connection with row dictionaries and foreign keys enabled."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
 def _json_dumps(value: Any) -> str | None:
     """Serialize optional JSON data for database storage."""
     if value is None:
         return None
 
     return json.dumps(value, ensure_ascii=False)
-
-
-def _bool_to_int(value: Any) -> int | None:
-    """Convert optional bool-like values to SQLite integer flags.
-
-    This remains for sqlite3-backed route functions during the incremental
-    port. Backend-aware write paths should use ``_db_bool`` instead.
-    """
-    if value is None:
-        return None
-
-    return 1 if bool(value) else 0
 
 
 def _db_bool(value: Any) -> bool | int | None:
@@ -359,7 +338,6 @@ def init_sqlite_db() -> None:
                 """
             )
         )
-
 
         _ensure_column(
             conn,
@@ -879,36 +857,34 @@ def save_route_task(
     The prompt template is stored without the full SSAL text to avoid
     duplicating large network data in every route task row.
     """
-    with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO route_tasks (
-                created_at,
-                origin,
-                destination,
-                ssal_hash,
-                prompt_template,
-                prompt_template_name,
-                ssal_profile_name,
-                ground_truth_path_json,
-                ground_truth_length
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                _now(),
-                origin,
-                destination,
-                ssal_hash,
-                prompt_template,
-                prompt_template_name,
-                ssal_profile_name,
-                json.dumps(ground_truth_path),
-                ground_truth_length,
-            ),
-        )
-        conn.commit()
-        return int(cursor.lastrowid)
+    columns = [
+        "created_at",
+        "origin",
+        "destination",
+        "ssal_hash",
+        "prompt_template",
+        "prompt_template_name",
+        "ssal_profile_name",
+        "ground_truth_path_json",
+        "ground_truth_length",
+    ]
+    values = {
+        "created_at": _now(),
+        "origin": origin,
+        "destination": destination,
+        "ssal_hash": ssal_hash,
+        "prompt_template": prompt_template,
+        "prompt_template_name": prompt_template_name,
+        "ssal_profile_name": ssal_profile_name,
+        "ground_truth_path_json": _json_dumps(ground_truth_path),
+        "ground_truth_length": ground_truth_length,
+    }
+
+    return insert_returning_id(
+        table_name="route_tasks",
+        columns=columns,
+        values=values,
+    )
 
 
 def save_route_evaluation(
@@ -924,59 +900,62 @@ def save_route_evaluation(
     Compact metric columns are stored for querying and display. The complete
     evaluator result is also stored as JSON for later debugging.
     """
-    with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO route_evaluations (
-                created_at,
-                task_id,
-                run_id,
-                provider,
-                model,
-                valid_json,
-                valid_path,
-                exact_path_match,
-                candidate_path_json,
-                candidate_declared_length,
-                candidate_computed_length,
-                ground_truth_path_json,
-                ground_truth_length,
-                absolute_length_error,
-                relative_length_error,
-                declared_length_absolute_error,
-                declared_length_relative_error,
-                node_overlap,
-                edge_overlap,
-                error_text,
-                raw_evaluation_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                _now(),
-                task_id,
-                run_id,
-                provider,
-                model,
-                _bool_to_int(evaluation.get("valid_json")),
-                _bool_to_int(evaluation.get("valid_path")),
-                _bool_to_int(evaluation.get("exact_path_match")),
-                _json_dumps(evaluation.get("candidate_path")),
-                evaluation.get("candidate_declared_length"),
-                evaluation.get("candidate_computed_length"),
-                _json_dumps(evaluation.get("ground_truth_path")),
-                evaluation.get("ground_truth_length"),
-                evaluation.get("absolute_length_error"),
-                evaluation.get("relative_length_error"),
-                evaluation.get("declared_length_absolute_error"),
-                evaluation.get("declared_length_relative_error"),
-                evaluation.get("node_overlap"),
-                evaluation.get("edge_overlap"),
-                evaluation.get("error_text") or evaluation.get("reason"),
-                _json_dumps(evaluation),
-            ),
-        )
-        conn.commit()
-        return int(cursor.lastrowid)
+    columns = [
+        "created_at",
+        "task_id",
+        "run_id",
+        "provider",
+        "model",
+        "valid_json",
+        "valid_path",
+        "exact_path_match",
+        "candidate_path_json",
+        "candidate_declared_length",
+        "candidate_computed_length",
+        "ground_truth_path_json",
+        "ground_truth_length",
+        "absolute_length_error",
+        "relative_length_error",
+        "declared_length_absolute_error",
+        "declared_length_relative_error",
+        "node_overlap",
+        "edge_overlap",
+        "error_text",
+        "raw_evaluation_json",
+    ]
+    values = {
+        "created_at": _now(),
+        "task_id": task_id,
+        "run_id": run_id,
+        "provider": provider,
+        "model": model,
+        "valid_json": _db_bool(evaluation.get("valid_json")),
+        "valid_path": _db_bool(evaluation.get("valid_path")),
+        "exact_path_match": _db_bool(evaluation.get("exact_path_match")),
+        "candidate_path_json": _json_dumps(evaluation.get("candidate_path")),
+        "candidate_declared_length": evaluation.get("candidate_declared_length"),
+        "candidate_computed_length": evaluation.get("candidate_computed_length"),
+        "ground_truth_path_json": _json_dumps(evaluation.get("ground_truth_path")),
+        "ground_truth_length": evaluation.get("ground_truth_length"),
+        "absolute_length_error": evaluation.get("absolute_length_error"),
+        "relative_length_error": evaluation.get("relative_length_error"),
+        "declared_length_absolute_error": evaluation.get(
+            "declared_length_absolute_error"
+        ),
+        "declared_length_relative_error": evaluation.get(
+            "declared_length_relative_error"
+        ),
+        "node_overlap": evaluation.get("node_overlap"),
+        "edge_overlap": evaluation.get("edge_overlap"),
+        "error_text": evaluation.get("error_text") or evaluation.get("reason"),
+        "raw_evaluation_json": _json_dumps(evaluation),
+    }
+
+    return insert_returning_id(
+        table_name="route_evaluations",
+        columns=columns,
+        values=values,
+    )
 
 
 def load_route_evaluations(limit: int = 100) -> pd.DataFrame:
@@ -985,104 +964,104 @@ def load_route_evaluations(limit: int = 100) -> pd.DataFrame:
     The main history table uses compact metric columns, while selected-row
     detail views can use the saved path/raw JSON fields for segment inspection.
     """
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                re.id,
-                re.created_at,
-                re.task_id,
-                re.run_id,
-                re.provider,
-                re.model,
-                rt.origin,
-                rt.destination,
-                rt.ssal_hash,
-                rt.prompt_template_name,
-                rt.ssal_profile_name,
+    rows = fetch_all_dicts(
+        """
+        SELECT
+            re.id,
+            re.created_at,
+            re.task_id,
+            re.run_id,
+            re.provider,
+            re.model,
+            rt.origin,
+            rt.destination,
+            rt.ssal_hash,
+            rt.prompt_template_name,
+            rt.ssal_profile_name,
 
-                re.valid_json,
-                re.valid_path,
-                re.exact_path_match,
+            re.valid_json,
+            re.valid_path,
+            re.exact_path_match,
 
-                re.candidate_path_json,
-                COALESCE(
-                    re.ground_truth_path_json,
-                    rt.ground_truth_path_json
-                ) AS ground_truth_path_json,
+            re.candidate_path_json,
+            COALESCE(
+                re.ground_truth_path_json,
+                rt.ground_truth_path_json
+            ) AS ground_truth_path_json,
 
-                re.candidate_declared_length,
-                re.candidate_computed_length,
-                re.ground_truth_length,
+            re.candidate_declared_length,
+            re.candidate_computed_length,
+            re.ground_truth_length,
 
-                re.absolute_length_error,
-                re.relative_length_error,
-                re.declared_length_absolute_error,
-                re.declared_length_relative_error,
+            re.absolute_length_error,
+            re.relative_length_error,
+            re.declared_length_absolute_error,
+            re.declared_length_relative_error,
 
-                re.node_overlap,
-                re.edge_overlap,
+            re.node_overlap,
+            re.edge_overlap,
 
-                re.error_text,
-                re.raw_evaluation_json
-            FROM route_evaluations re
-            JOIN route_tasks rt ON rt.id = re.task_id
-            ORDER BY re.id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+            re.error_text,
+            re.raw_evaluation_json
+        FROM route_evaluations re
+        JOIN route_tasks rt ON rt.id = re.task_id
+        ORDER BY re.id DESC
+        LIMIT :limit
+        """,
+        {"limit": limit},
+    )
 
     if not rows:
         return pd.DataFrame()
 
-    return pd.DataFrame([dict(row) for row in rows])
+    return pd.DataFrame(rows)
 
 
 def export_route_history_rows() -> list[dict[str, Any]]:
     """Return route-history rows compatible with research.history_evaluation."""
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                r.id,
-                r.created_at,
-                r.provider,
-                r.model,
-                r.finish_status,
-                r.max_output_tokens,
-                r.prompt,
-                r.response_text,
-                r.error_text,
-                rt.origin,
-                rt.destination,
-                rt.ssal_hash,
-                rt.prompt_template_name,
-                rt.ssal_profile_name
-            FROM route_evaluations re
-            JOIN route_tasks rt ON rt.id = re.task_id
-            JOIN runs r ON r.id = re.run_id
-            ORDER BY re.id DESC
-            """
-        ).fetchall()
+    rows = fetch_all_dicts(
+        """
+        SELECT
+            r.id,
+            r.created_at,
+            r.provider,
+            r.model,
+            r.finish_status,
+            r.max_output_tokens,
+            r.prompt,
+            r.response_text,
+            r.error_text,
+            rt.origin,
+            rt.destination,
+            rt.ssal_hash,
+            rt.prompt_template_name,
+            rt.ssal_profile_name
+        FROM route_evaluations re
+        JOIN route_tasks rt ON rt.id = re.task_id
+        JOIN runs r ON r.id = re.run_id
+        ORDER BY re.id DESC
+        """
+    )
 
     return [
-        {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "provider": row["provider"],
-            "model": row["model"],
-            "finish_status": row["finish_status"],
-            "max_output_tokens": row["max_output_tokens"],
-            "origin": row["origin"],
-            "destination": row["destination"],
-            "ssal_hash": row["ssal_hash"],
-            "prompt_template_name": row["prompt_template_name"],
-            "ssal_profile_name": row["ssal_profile_name"],
-            "prompt": row["prompt"],
-            "response_text": row["response_text"] or "",
-            "error_text": row["error_text"],
-        }
+        _json_safe_row(
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "provider": row["provider"],
+                "model": row["model"],
+                "finish_status": row["finish_status"],
+                "max_output_tokens": row["max_output_tokens"],
+                "origin": row["origin"],
+                "destination": row["destination"],
+                "ssal_hash": row["ssal_hash"],
+                "prompt_template_name": row["prompt_template_name"],
+                "ssal_profile_name": row["ssal_profile_name"],
+                "prompt": row["prompt"],
+                "response_text": row["response_text"] or "",
+                "error_text": row["error_text"],
+            }
+        )
         for row in rows
     ]
 
