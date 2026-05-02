@@ -22,6 +22,17 @@ This repository is currently at `v0.4.0`.
 
 This release builds on the `v0.3.1` route-map workflow by adding a reusable route prompt-template workflow for route-finding experiments.
 
+> [!NOTE]
+> The dashboard now installs the shared research code from the published `spatial-ninjas-research` package. However, route-finding mode still expects the GeoPackage data file to be available locally. Until remote GeoPackage fetching is implemented, the easiest setup is still to keep the `research` repo as a sibling folder:
+>
+> ```text
+> spatial-ninjas/
+>   research/
+>   llm-compare-dashboard/
+> ```
+>
+> This sibling checkout is currently needed for route-network data, not for importing the Python research package.
+
 ## Concepts used in this README
 
 **SSAL** means **Simplified Semantic Adjacency List**. In this project, it is a text representation of a road/routing network. Each node lists its outgoing neighbouring nodes and edge attributes such as length, street name, direction flag, and coordinates. The dashboard sends this SSAL text to the model as route-finding context.
@@ -57,7 +68,8 @@ Current dashboard capabilities include:
   - persistent local SQLite history and JSON export
 
 - **SSAL-native route finding**
-  - local `NetworkBundle` loading from the sibling `research` repo
+  - `NetworkBundle` loading through the installed `research` package
+  - local GeoPackage data loaded from the sibling `research` checkout for now
   - Dijkstra ground-truth route generation
   - parallel OpenAI/Gemini route calls
   - route evaluation with saved metrics and JSON export
@@ -80,52 +92,31 @@ Current dashboard capabilities include:
   - segment inspection from saved evaluator output
   - map replay and route-history JSON export
 
-The route-finding mode requires the sibling `research` repository at `v0.1.0` or a compatible version. In the expected local layout, the dashboard installs it through:
-
-```txt
--e ../research
-```
-
 ## Why this exists
 
-The goal is to make model comparison and route-navigation experiments reproducible. Instead of manually copying prompts between providers or writing one-off scripts, the dashboard lets you:
+The goal is to make model comparison and route-navigation experiments reproducible.
+
+Instead of manually copying prompts between providers or writing one-off scripts, the dashboard keeps the workflow in one local app:
 
 - run the same prompt against OpenAI and Gemini
-- inspect responses, metadata, token usage, latency, and retry attempts
-- save provider calls to a local SQLite history
-- export saved general prompt history as JSON
-- load an SSAL route network from the sibling `research` repo
-- save and reuse route prompt templates for repeated experiments
-- validate route prompt placeholders before provider calls
-- record prompt template and SSAL profile metadata with route tasks
+- save provider calls and route evaluations to local SQLite history
+- generate SSAL-based route prompts from a shared route network
 - compare model-generated routes against Dijkstra ground truth
-- review saved route evaluations in a dedicated history view
-- inspect saved routes as ordered node-to-node segments
-- compare candidate and reference routes visually on Folium maps
-- explore selected route tasks with full-network context and origin/destination markers
-- inspect candidate/reference route nodes with indexed map tooltips
-- replay saved route evaluations with route maps and segment highlights
-- export route-history rows for offline research evaluation
+- inspect route outputs visually and segment-by-segment
+- reuse prompt templates across repeated route experiments
+- export history for offline research evaluation
 
-## Relationship to the research repo
+## Relationship to the research package
 
-The route-finding workflow depends on reusable modules from the sibling [`research`](https://github.com/spatial-ninjas/research) repository.
+The route-finding workflow depends on reusable modules from [`spatial-ninjas/research`](https://github.com/spatial-ninjas/research).
 
-Expected local folder layout:
-
-```text
-spatial-ninjas/
-  research/
-  llm-compare-dashboard/
-```
-
-The dashboard installs `research` as an editable local dependency through `requirements.txt`:
+For normal installation and deployment, the dashboard uses the published PyPI package:
 
 ```txt
--e ../research
+spatial-ninjas-research==0.1.0
 ```
 
-This lets the dashboard call the shared research-side route evaluator directly:
+The PyPI distribution name is `spatial-ninjas-research`, while the Python import package remains `research`:
 
 ```python
 from research.graph import dijkstra_shortest_path
@@ -133,7 +124,24 @@ from research.evaluation import evaluate_route_response
 from research.network_loader import load_network_bundle_from_gpkg
 ```
 
-If your folder layout is different, either adjust the editable dependency path in `requirements.txt` or install the research repo manually with the correct path.
+For local development, you can still use an editable checkout if you are changing both repositories together.
+
+Expected local development layout:
+
+```text
+spatial-ninjas/
+  research/
+  llm-compare-dashboard/
+```
+
+From inside `llm-compare-dashboard`:
+
+```bash
+pip uninstall spatial-ninjas-research
+pip install -e ../research
+```
+
+This editable install is a development override. Deployment should use the versioned package from PyPI.
 
 ## Current app modes
 
@@ -387,9 +395,18 @@ Highlights:
 
 ## Setup
 
-### 1. Clone or place both repos in the expected layout
+### 1. Clone the dashboard repo
 
-The default local dependency path assumes this layout:
+For normal use, only this repository is required:
+
+```bash
+git clone https://github.com/spatial-ninjas/llm-compare-dashboard.git
+cd llm-compare-dashboard
+```
+
+The shared research utilities are installed from PyPI through `requirements.txt`.
+
+If you are developing the dashboard and research package together, you may also keep both repositories side by side:
 
 ```text
 spatial-ninjas/
@@ -397,7 +414,7 @@ spatial-ninjas/
   llm-compare-dashboard/
 ```
 
-From inside `llm-compare-dashboard`, `../research` should point to the sibling research repo.
+Then install `../research` as an editable development override after installing dashboard dependencies.
 
 ### 2. Create and activate a virtual environment
 
@@ -421,10 +438,29 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-This also installs the sibling `research` repo in editable mode through:
+This installs the published research package:
 
 ```txt
--e ../research
+spatial-ninjas-research==0.1.0
+```
+
+To verify that the dashboard is using the installed package:
+
+```bash
+python - <<'PY'
+import research
+print(research.__version__)
+print(research.__file__)
+PY
+```
+
+The printed path should normally point inside `.venv/.../site-packages/research`.
+
+For local editable development against a sibling research checkout, override the package with:
+
+```bash
+pip uninstall spatial-ninjas-research
+pip install -e ../research
 ```
 
 ### 4. Run smoke tests for imports
@@ -490,7 +526,7 @@ NETWORK_NODES_LAYER=slimmed_cropped_nodes
 NETWORK_CACHE_DIR=.cache/network
 ```
 
-For current local development, `NETWORK_GPKG_PATH` should point to the GeoPackage file in the sibling `research` repo.
+For current local development, `NETWORK_GPKG_PATH` may still point to the GeoPackage file in a sibling `research` checkout. This is a data-file dependency, not a Python package dependency. Remote GeoPackage loading through `NETWORK_GPKG_URL` is planned for deployment.
 
 `NETWORK_GPKG_URL`, `NETWORK_GPKG_SHA256`, and `NETWORK_CACHE_DIR` are reserved for optional remote GeoPackage fetching/caching. Local path mode is the currently implemented network loading path.
 
@@ -508,7 +544,7 @@ http://localhost:8501
 
 ## Route-finding network configuration
 
-The route-finding mode loads the local routing network through the sibling `research` repo.
+The route-finding mode loads the local routing network through the installed `research` package.
 
 The local loading path is:
 
@@ -748,7 +784,7 @@ response_text
 ```text
 llm-compare-dashboard/
   app.py                         Streamlit entrypoint, app version, and mode router
-  requirements.txt               Python dependencies, including editable research dependency
+  requirements.txt               Python dependencies, including spatial-ninjas-research
   .env.example                   Environment variable template
   history.db                     Local SQLite DB, created automatically and ignored by Git
 
@@ -770,7 +806,6 @@ llm-compare-dashboard/
   docs/
     screenshot-main.png          README screenshot
 ```
-
 
 ## Route visualisation smoke test
 
