@@ -7,3 +7,4 @@ spatial-ninjas-research==0.1.0
 folium
 SQLAlchemy
 psycopg[binary]
+Authlib>=1.3.2
