@@ -5,4 +5,7 @@ __pycache__/
 
 history.db
 route_visualization_test.html
+
 .streamlit/secrets.toml
+deploy/cloudrun/env.yaml
+deploy/cloudrun/secrets.toml
