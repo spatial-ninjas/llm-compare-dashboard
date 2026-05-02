@@ -21,17 +21,46 @@ that run, so old experiments remain reproducible even if a saved template is
 later edited, renamed, or deleted.
 """
 
+import os
 import json
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import streamlit as st
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+
 import pandas as pd
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = APP_DIR / "history.db"
+
+
+def get_database_url() -> str:
+    """Return configured database URL, defaulting to local SQLite."""
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url:
+        return database_url
+
+    return f"sqlite:///{DB_PATH}"
+
+
+@st.cache_resource
+def get_engine() -> Engine:
+    """Create and cache the SQLAlchemy engine."""
+    return create_engine(
+        get_database_url(),
+        future=True,
+        pool_pre_ping=True,
+    )
+
+
+def get_database_backend_name() -> str:
+    """Return active SQLAlchemy database backend name."""
+    return get_engine().dialect.name
 
 
 def get_conn() -> sqlite3.Connection:
