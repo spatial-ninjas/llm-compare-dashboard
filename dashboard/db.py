@@ -1,6 +1,6 @@
-"""SQLite persistence helpers for the dashboard.
+"""Persistence helpers for the dashboard.
 
-The dashboard stores four related kinds of local data:
+The dashboard stores four related kinds of data:
 
 - runs stores one row per OpenAI/Gemini API call.
 - route_prompt_templates stores reusable user-defined route prompt templates.
@@ -9,6 +9,10 @@ The dashboard stores four related kinds of local data:
   and Dijkstra ground truth.
 - route_evaluations stores evaluator metrics for one provider response on one
   route task.
+
+SQLite remains the default local backend. SQLAlchemy engine helpers are being
+introduced incrementally so the same persistence API can later support
+DATABASE_URL-configured managed backends such as PostgreSQL.
 
 Route-specific evaluation rows link back to generic provider calls through
 run_id and to route tasks through task_id. This keeps the general
@@ -29,8 +33,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import streamlit as st
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
+from collections.abc import Iterator
+from contextlib import contextmanager
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine, Connection
 
 import pandas as pd
 
@@ -63,6 +69,13 @@ def get_database_backend_name() -> str:
     return get_engine().dialect.name
 
 
+@contextmanager
+def db_transaction() -> Iterator[Connection]:
+    """Open a database transaction."""
+    with get_engine().begin() as conn:
+        yield conn
+
+
 def get_conn() -> sqlite3.Connection:
     """Open a SQLite connection with row dictionaries and foreign keys enabled."""
     conn = sqlite3.connect(DB_PATH)
@@ -92,29 +105,40 @@ def _now() -> str:
 
 
 def _ensure_column(
-    conn: sqlite3.Connection,
+    conn: Connection,
     *,
     table_name: str,
     column_name: str,
     column_definition: str,
 ) -> None:
+    """Add a SQLite column if it does not already exist.
+
+    This helper is used by the SQLite schema initializer for lightweight
+    compatibility with older local history.db files.
+    """
     existing_columns = {
         row["name"]
-        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        for row in conn.execute(
+            text(f"PRAGMA table_info({table_name})")
+        ).mappings()
     }
 
     if column_name not in existing_columns:
         conn.execute(
-            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+            text(
+                f"ALTER TABLE {table_name} "
+                f"ADD COLUMN {column_name} {column_definition}"
+            )
         )
 
 
 def _ensure_columns(
-    conn: sqlite3.Connection,
+    conn: Connection,
     *,
     table_name: str,
     columns: dict[str, str],
 ) -> None:
+    """Add missing SQLite columns for an existing table."""
     for column_name, column_definition in columns.items():
         _ensure_column(
             conn,
@@ -131,27 +155,29 @@ def init_db() -> None:
     added with lightweight SQLite migrations, while route-specific tables are
     created if they do not already exist.
     """
-    with get_conn() as conn:
+    with db_transaction() as conn:
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                ok INTEGER NOT NULL,
-                latency_ms REAL,
-                max_output_tokens INTEGER,
-                input_tokens INTEGER,
-                output_tokens INTEGER,
-                total_tokens INTEGER,
-                finish_status TEXT,
-                response_text TEXT,
-                error_text TEXT,
-                raw_json TEXT
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    ok INTEGER NOT NULL,
+                    latency_ms REAL,
+                    max_output_tokens INTEGER,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    total_tokens INTEGER,
+                    finish_status TEXT,
+                    response_text TEXT,
+                    error_text TEXT,
+                    raw_json TEXT
+                )
+                """
             )
-            """
         )
 
         _ensure_columns(
@@ -166,36 +192,41 @@ def init_db() -> None:
         )
 
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS route_prompt_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                name TEXT NOT NULL UNIQUE,
-                description TEXT,
-                template_text TEXT NOT NULL,
-                ssal_profile_name TEXT,
-                is_builtin INTEGER NOT NULL DEFAULT 0
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS route_prompt_templates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT,
+                    template_text TEXT NOT NULL,
+                    ssal_profile_name TEXT,
+                    is_builtin INTEGER NOT NULL DEFAULT 0
+                )
+                """
             )
-            """
         )
 
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS route_tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                destination TEXT NOT NULL,
-                ssal_hash TEXT NOT NULL,
-                prompt_template TEXT NOT NULL,
-                prompt_template_name TEXT,
-                ssal_profile_name TEXT,
-                ground_truth_path_json TEXT,
-                ground_truth_length REAL
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS route_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    ssal_hash TEXT NOT NULL,
+                    prompt_template TEXT NOT NULL,
+                    prompt_template_name TEXT,
+                    ssal_profile_name TEXT,
+                    ground_truth_path_json TEXT,
+                    ground_truth_length REAL
+                )
+                """
             )
-            """
         )
+
 
         _ensure_column(
             conn,
@@ -212,55 +243,61 @@ def init_db() -> None:
         )
 
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS route_evaluations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                task_id INTEGER NOT NULL,
-                run_id INTEGER NOT NULL,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS route_evaluations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    task_id INTEGER NOT NULL,
+                    run_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
 
-                valid_json INTEGER,
-                valid_path INTEGER,
-                exact_path_match INTEGER,
+                    valid_json INTEGER,
+                    valid_path INTEGER,
+                    exact_path_match INTEGER,
 
-                candidate_path_json TEXT,
-                candidate_declared_length REAL,
-                candidate_computed_length REAL,
+                    candidate_path_json TEXT,
+                    candidate_declared_length REAL,
+                    candidate_computed_length REAL,
 
-                ground_truth_path_json TEXT,
-                ground_truth_length REAL,
+                    ground_truth_path_json TEXT,
+                    ground_truth_length REAL,
 
-                absolute_length_error REAL,
-                relative_length_error REAL,
-                declared_length_absolute_error REAL,
-                declared_length_relative_error REAL,
+                    absolute_length_error REAL,
+                    relative_length_error REAL,
+                    declared_length_absolute_error REAL,
+                    declared_length_relative_error REAL,
 
-                node_overlap REAL,
-                edge_overlap REAL,
+                    node_overlap REAL,
+                    edge_overlap REAL,
 
-                error_text TEXT,
-                raw_evaluation_json TEXT,
+                    error_text TEXT,
+                    raw_evaluation_json TEXT,
 
-                FOREIGN KEY(task_id) REFERENCES route_tasks(id),
-                FOREIGN KEY(run_id) REFERENCES runs(id)
+                    FOREIGN KEY(task_id) REFERENCES route_tasks(id),
+                    FOREIGN KEY(run_id) REFERENCES runs(id)
+                )
+                """
             )
-            """
         )
 
         conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_route_evaluations_task_id
-            ON route_evaluations(task_id)
-            """
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_route_evaluations_task_id
+                ON route_evaluations(task_id)
+                """
+            )
         )
 
         conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_route_evaluations_run_id
-            ON route_evaluations(run_id)
-            """
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_route_evaluations_run_id
+                ON route_evaluations(run_id)
+                """
+            )
         )
 
         conn.commit()
