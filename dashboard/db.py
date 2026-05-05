@@ -1018,24 +1018,75 @@ def load_route_evaluations(limit: int = 100) -> pd.DataFrame:
 
 
 def export_route_history_rows() -> list[dict[str, Any]]:
-    """Return route-history rows compatible with research.history_evaluation."""
+    """Return compact route-history rows for export.
+
+    Each exported row represents one saved route evaluation. The full prompt is
+    intentionally omitted because route prompts can contain large SSAL text.
+    Route context is represented by origin, destination, SSAL hash, prompt
+    template metadata, and saved evaluator fields.
+    """
     rows = fetch_all_dicts(
         """
         SELECT
-            r.id,
-            r.created_at,
+            re.id AS route_evaluation_id,
+            re.created_at AS route_evaluation_created_at,
+            re.task_id,
+            re.run_id,
+
+            r.created_at AS run_created_at,
             r.provider,
             r.model,
-            r.finish_status,
+            r.ok,
+            r.latency_ms,
             r.max_output_tokens,
-            r.prompt,
+            r.input_tokens,
+            r.output_tokens,
+            r.total_tokens,
+            r.finish_status,
+            r.thinking_mode,
+            r.thinking_budget,
+            r.thoughts_tokens,
+            r.attempts,
             r.response_text,
-            r.error_text,
+            r.error_text AS run_error_text,
+            r.raw_json AS run_raw_json,
+
+            rt.created_at AS route_task_created_at,
             rt.origin,
             rt.destination,
             rt.ssal_hash,
             rt.prompt_template_name,
-            rt.ssal_profile_name
+            rt.ssal_profile_name,
+            rt.ground_truth_path_json AS task_ground_truth_path_json,
+            rt.ground_truth_length AS task_ground_truth_length,
+
+            re.valid_json,
+            re.valid_path,
+            re.exact_path_match,
+
+            re.candidate_path_json,
+            re.candidate_declared_length,
+            re.candidate_computed_length,
+
+            COALESCE(
+                re.ground_truth_path_json,
+                rt.ground_truth_path_json
+            ) AS ground_truth_path_json,
+            COALESCE(
+                re.ground_truth_length,
+                rt.ground_truth_length
+            ) AS ground_truth_length,
+
+            re.absolute_length_error,
+            re.relative_length_error,
+            re.declared_length_absolute_error,
+            re.declared_length_relative_error,
+
+            re.node_overlap,
+            re.edge_overlap,
+
+            re.error_text AS evaluation_error_text,
+            re.raw_evaluation_json
         FROM route_evaluations re
         JOIN route_tasks rt ON rt.id = re.task_id
         JOIN runs r ON r.id = re.run_id
@@ -1046,20 +1097,75 @@ def export_route_history_rows() -> list[dict[str, Any]]:
     return [
         _json_safe_row(
             {
-                "id": row["id"],
-                "created_at": row["created_at"],
+                "id": row["run_id"],
+                "run_id": row["run_id"],
+                "route_evaluation_id": row["route_evaluation_id"],
+                "task_id": row["task_id"],
+
+                "created_at": row["run_created_at"],
+                "route_evaluation_created_at": row[
+                    "route_evaluation_created_at"
+                ],
+                "route_task_created_at": row["route_task_created_at"],
+
                 "provider": row["provider"],
                 "model": row["model"],
-                "finish_status": row["finish_status"],
+                "ok": row["ok"],
+                "latency_ms": row["latency_ms"],
                 "max_output_tokens": row["max_output_tokens"],
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "total_tokens": row["total_tokens"],
+                "finish_status": row["finish_status"],
+                "thinking_mode": row["thinking_mode"],
+                "thinking_budget": row["thinking_budget"],
+                "thoughts_tokens": row["thoughts_tokens"],
+                "attempts": row["attempts"],
+
                 "origin": row["origin"],
                 "destination": row["destination"],
                 "ssal_hash": row["ssal_hash"],
                 "prompt_template_name": row["prompt_template_name"],
                 "ssal_profile_name": row["ssal_profile_name"],
-                "prompt": row["prompt"],
+
                 "response_text": row["response_text"] or "",
-                "error_text": row["error_text"],
+                "error_text": row["run_error_text"],
+
+                "valid_json": row["valid_json"],
+                "valid_path": row["valid_path"],
+                "exact_path_match": row["exact_path_match"],
+
+                "candidate_path_json": row["candidate_path_json"],
+                "candidate_declared_length": row[
+                    "candidate_declared_length"
+                ],
+                "candidate_computed_length": row[
+                    "candidate_computed_length"
+                ],
+
+                "ground_truth_path_json": row["ground_truth_path_json"],
+                "ground_truth_length": row["ground_truth_length"],
+                "task_ground_truth_path_json": row[
+                    "task_ground_truth_path_json"
+                ],
+                "task_ground_truth_length": row[
+                    "task_ground_truth_length"
+                ],
+
+                "absolute_length_error": row["absolute_length_error"],
+                "relative_length_error": row["relative_length_error"],
+                "declared_length_absolute_error": row[
+                    "declared_length_absolute_error"
+                ],
+                "declared_length_relative_error": row[
+                    "declared_length_relative_error"
+                ],
+                "node_overlap": row["node_overlap"],
+                "edge_overlap": row["edge_overlap"],
+
+                "evaluation_error_text": row["evaluation_error_text"],
+                "raw_evaluation_json": row["raw_evaluation_json"],
+                "raw_json": row["run_raw_json"],
             }
         )
         for row in rows

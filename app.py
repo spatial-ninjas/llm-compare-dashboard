@@ -2,7 +2,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 
-APP_VERSION = "v0.5.0"
+APP_VERSION = "v0.5.1"
 
 load_dotenv()
 

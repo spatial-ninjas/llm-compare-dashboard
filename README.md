@@ -1,6 +1,6 @@
 # llm-compare-dashboard
 
-Current release: **v0.5.0**
+Current release: **v0.5.1**
 
 `llm-compare-dashboard` is a Streamlit app for comparing OpenAI and Gemini responses and evaluating LLM route-generation behavior over an SSAL-native Southern Helsinki route network.
 
@@ -338,6 +338,10 @@ llm-compare-dashboard/
 ```
 
 ## Release notes
+
+### v0.5.1
+
+Patched route-history export to include route evaluation/task metadata and evaluator metrics while omitting the full prompt to keep exported JSON compact.
 
 ### v0.5.0
 
