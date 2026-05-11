@@ -99,8 +99,21 @@ def build_network_cache_path(
 
 
 @st.cache_resource
-def load_route_network_bundle():
-    """Load and cache the route-finding NetworkBundle."""
+def load_route_network_bundle(
+    *,
+    include_coords: bool = True,
+    include_direction: bool = False,
+    include_attrs: tuple[str, ...] = (
+        "length",
+        "name",
+        "oneway",
+        "from_x",
+        "from_y",
+        "to_x",
+        "to_y",
+    ),
+):
+    """Load and cache the route-finding NetworkBundle from concrete SSAL options."""
     config = get_network_config()
     gpkg_path = resolve_network_gpkg_path(config)
 
@@ -108,4 +121,7 @@ def load_route_network_bundle():
         gpkg_path=gpkg_path,
         edges_layer=config["edges_layer"],
         nodes_layer=config["nodes_layer"],
+        include_coords=include_coords,
+        include_direction=include_direction,
+        include_attrs=list(include_attrs),
     )

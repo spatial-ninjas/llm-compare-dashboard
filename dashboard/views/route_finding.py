@@ -36,8 +36,9 @@ from dashboard.route_prompts import (
     DEFAULT_ROUTE_PROMPT_TEMPLATE,
     DEFAULT_ROUTE_PROMPT_TEMPLATE_NAME,
     DEFAULT_SSAL_PROFILE_NAME,
-    DEFAULT_SSAL_SCHEMA_DESCRIPTION,
     build_route_prompt,
+    get_ssal_profile,
+    list_ssal_profiles,
     validate_route_prompt_template,
 )
 from dashboard.route_visualization import (
@@ -644,8 +645,46 @@ def render_route_eval_card(
 
 def render_route_finding_view() -> None:
     """Render the route-finding evaluation view."""
+    template_options = _load_route_prompt_template_options()
+
+    selected_template_id = st.session_state.get(
+        "route_prompt_template_id",
+        BUILTIN_TEMPLATE_OPTION_ID,
+    )
+
+    selected_template = _selected_template_option(
+        template_options,
+        selected_template_id,
+    )
+
+    if "route_prompt_template" not in st.session_state:
+        st.session_state.route_prompt_template = selected_template["template_text"]
+
+    if "route_prompt_template_name" not in st.session_state:
+        st.session_state.route_prompt_template_name = selected_template["name"]
+
+    if "route_prompt_ssal_profile_name" not in st.session_state:
+        st.session_state.route_prompt_ssal_profile_name = (
+            selected_template.get("ssal_profile_name") or DEFAULT_SSAL_PROFILE_NAME
+        )
+
+    template = st.session_state.route_prompt_template
+    template_name = st.session_state.route_prompt_template_name
+    template_ssal_profile_name = st.session_state.route_prompt_ssal_profile_name
+    ssal_profile = get_ssal_profile(template_ssal_profile_name)
+    default_ssal_profile = get_ssal_profile(DEFAULT_SSAL_PROFILE_NAME)
+
     try:
-        bundle = load_route_network_bundle()
+        bundle = load_route_network_bundle(
+            include_coords=ssal_profile.include_coords,
+            include_direction=ssal_profile.include_direction,
+            include_attrs=ssal_profile.include_attrs,
+        )
+        display_bundle = load_route_network_bundle(
+            include_coords=default_ssal_profile.include_coords,
+            include_direction=default_ssal_profile.include_direction,
+            include_attrs=default_ssal_profile.include_attrs,
+        )
     except Exception as exc:
         st.error(f"Failed to load route network: {exc}")
         st.info(
@@ -715,6 +754,7 @@ def render_route_finding_view() -> None:
 
         st.divider()
         st.caption("Route network")
+        st.write(f"SSAL profile: `{ssal_profile.name}`")
         st.write(f"SSAL hash: `{bundle.ssal_hash[:12]}`")
         st.write(f"Nodes: `{len(nodes)}`")
 
@@ -768,7 +808,7 @@ def render_route_finding_view() -> None:
         )
 
         render_route_map_preview(
-            bundle=bundle,
+            bundle=display_bundle,
             origin=origin,
             destination=destination,
             ground_truth_path=ground_truth_path,
@@ -791,33 +831,6 @@ def render_route_finding_view() -> None:
             preview = "\n".join(bundle.ssal_text.splitlines()[:40])
             st.code(preview, language="text")
 
-    template_options = _load_route_prompt_template_options()
-
-    selected_template_id = st.session_state.get(
-        "route_prompt_template_id",
-        BUILTIN_TEMPLATE_OPTION_ID,
-    )
-
-    selected_template = _selected_template_option(
-        template_options,
-        selected_template_id,
-    )
-
-    if "route_prompt_template" not in st.session_state:
-        st.session_state.route_prompt_template = selected_template["template_text"]
-
-    if "route_prompt_template_name" not in st.session_state:
-        st.session_state.route_prompt_template_name = selected_template["name"]
-
-    if "route_prompt_ssal_profile_name" not in st.session_state:
-        st.session_state.route_prompt_ssal_profile_name = (
-            selected_template.get("ssal_profile_name") or DEFAULT_SSAL_PROFILE_NAME
-        )
-
-    template = st.session_state.route_prompt_template
-    template_name = st.session_state.route_prompt_template_name
-    template_ssal_profile_name = st.session_state.route_prompt_ssal_profile_name
-
     template_errors = validate_route_prompt_template(template)
     prompt = ""
 
@@ -828,6 +841,7 @@ def render_route_finding_view() -> None:
                 origin=origin,
                 destination=destination,
                 template=template,
+                ssal_schema_description=ssal_profile.schema_description,
             )
         except ValueError as exc:
             template_errors = [str(exc)]
@@ -835,10 +849,10 @@ def render_route_finding_view() -> None:
     with prompt_col:
         st.subheader("Prompt template")
 
-        st.caption(f"Current SSAL profile: `{DEFAULT_SSAL_PROFILE_NAME}`")
+        st.caption(f"Current SSAL profile: `{ssal_profile.name}`")
 
         with st.expander("SSAL schema", expanded=False):
-            st.code(DEFAULT_SSAL_SCHEMA_DESCRIPTION, language="text")
+            st.code(ssal_profile.schema_description, language="text")
 
         selected_option_id = st.selectbox(
             "Saved prompt template",
@@ -867,6 +881,29 @@ def render_route_finding_view() -> None:
             st.session_state.route_prompt_ssal_profile_name = (
                 selected_template.get("ssal_profile_name") or DEFAULT_SSAL_PROFILE_NAME
             )
+            st.rerun()
+
+        ssal_profiles = list_ssal_profiles()
+        selected_profile_name = st.selectbox(
+            "SSAL profile for this prompt template",
+            options=[profile.name for profile in ssal_profiles],
+            index=next(
+                (
+                    index
+                    for index, profile in enumerate(ssal_profiles)
+                    if profile.name == ssal_profile.name
+                ),
+                0,
+            ),
+            format_func=lambda name: get_ssal_profile(name).label,
+            help=(
+                "This controls the SSAL text inserted into {ssal_text}. "
+                "It is saved with the prompt template and route task."
+            ),
+        )
+
+        if selected_profile_name != ssal_profile.name:
+            st.session_state.route_prompt_ssal_profile_name = selected_profile_name
             st.rerun()
 
         edited_template = st.text_area(
@@ -1188,7 +1225,7 @@ def render_route_finding_view() -> None:
                 evaluation=openai_evaluation,
             )
             render_provider_route_map(
-                bundle=bundle,
+                bundle=display_bundle,
                 provider="OpenAI",
                 model=_get_result_model(openai_result, openai_model),
                 origin=origin,
@@ -1204,7 +1241,7 @@ def render_route_finding_view() -> None:
                 evaluation=gemini_evaluation,
             )
             render_provider_route_map(
-                bundle=bundle,
+                bundle=display_bundle,
                 provider="Gemini",
                 model=_get_result_model(gemini_result, gemini_model),
                 origin=origin,
