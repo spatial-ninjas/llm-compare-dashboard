@@ -1,6 +1,6 @@
 # llm-compare-dashboard
 
-Current release: **v0.5.1**
+Current release: **v0.5.2**
 
 `llm-compare-dashboard` is a Streamlit app for comparing OpenAI and Gemini responses and evaluating LLM route-generation behavior over an SSAL-native Southern Helsinki route network.
 
@@ -8,6 +8,7 @@ It supports:
 
 - general side-by-side provider comparison
 - SSAL-based route-finding prompts
+- selectable SSAL profiles for coordinate-aware and coordinate-free route-prompt experiments
 - Dijkstra ground-truth comparison
 - saved provider runs, route tasks, route evaluations, and prompt templates
 - route-history review and map replay
@@ -66,6 +67,8 @@ By default:
 
 **SSAL** means Simplified Semantic Adjacency List. It is the compact graph text shown to the model.
 
+**SSAL profile** means the selected shape of the SSAL text used in a route prompt, such as the default coordinate-aware representation or a compact coordinate-free representation.
+
 **OD pair** means origin-destination node pair.
 
 **Ground truth** means the deterministic Dijkstra shortest path over the loaded SSAL-derived graph.
@@ -80,7 +83,9 @@ Sends the same free-form prompt to OpenAI and Gemini, then saves provider respon
 
 ### Route finding
 
-Selects an OD pair, generates an SSAL route prompt, calls both providers, evaluates returned routes against Dijkstra ground truth, and saves route-specific metrics.
+Selects an OD pair, chooses an SSAL profile, generates an SSAL route prompt, calls both providers, evaluates returned routes against Dijkstra ground truth, and saves route-specific metrics.
+
+The default SSAL profile keeps the coordinate-aware representation used by earlier releases. A compact coordinate-free profile is also available for experiments where the model should focus on graph connectivity, edge length, street names, and oneway flags without endpoint coordinates.
 
 ### Route evaluation history
 
@@ -248,7 +253,7 @@ Deploy with:
 export PROJECT_ID=spatial-ninjas
 export REGION=europe-north1
 export SERVICE=llm-compare-dashboard
-export VERSION=v0.5.0
+export VERSION=v0.5.2
 
 ./scripts/deploy_cloud_run.sh
 ```
@@ -316,7 +321,7 @@ llm-compare-dashboard/
     auth.py                      Google OIDC auth gate and allowlist helpers
     db.py                        SQLite/PostgreSQL persistence helpers
     network.py                   local/remote NetworkBundle loading
-    route_prompts.py             route prompt templates and validation
+    route_prompts.py             route prompt templates, SSAL profiles, and validation
     route_visualization.py       Folium route visualisation helpers
     route_map_helpers.py         map embedding and segment-highlight helpers
     views/
@@ -338,6 +343,24 @@ llm-compare-dashboard/
 ```
 
 ## Release notes
+
+### v0.5.2
+
+Patched route-finding mode with lightweight selectable SSAL profiles for prompt experiments.
+
+Highlights:
+
+- kept the existing default coordinate-aware SSAL profile
+- added a compact coordinate-free profile with length, street name, and oneway fields
+- added an optional `{ssal_schema_description}` prompt-template placeholder
+- updated the built-in route prompt so the schema shown to the model matches the selected SSAL profile
+- loads the route prompt/evaluation `NetworkBundle` from the selected SSAL profile options
+- keeps map rendering on the default coordinate-aware bundle so coordinate-free experiments do not break visualisation
+
+Notes:
+
+- this is a narrow post-freeze patch for coordinate-free SSAL experiments, not the full user-defined SSAL profile system
+- route evaluation semantics and correctness metrics are unchanged
 
 ### v0.5.1
 
